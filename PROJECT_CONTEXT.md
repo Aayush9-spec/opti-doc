@@ -153,6 +153,7 @@ Responsibilities:
 - prepare LLM context
 - request candidate Dockerfile rewrites
 - parse structured AI output
+- remain provider-agnostic across hosted and local model backends
 
 ### E. Runner
 
@@ -230,8 +231,29 @@ examples/
 - `anyhow` or `thiserror` for error handling
 - `tracing` and `tracing-subscriber` for logs
 - `ratatui` later if a richer TUI becomes useful
+- provider adapters for OpenAI-compatible and vendor-specific APIs
 
-## 13. Domain Model Direction
+## 13. AI Provider Strategy
+
+The AI layer must be portable.
+
+OptiDock should support:
+
+- OpenAI
+- Anthropic / Claude
+- Gemini
+- OpenRouter
+- local OpenAI-compatible endpoints
+- Ollama or other local model runners
+
+Design rule:
+
+- the rest of the system should talk to a provider-agnostic optimization interface
+- provider-specific request translation should live behind adapters
+- switching models should not require rewriting orchestration logic
+- local models should remain first-class for privacy and offline workflows
+
+## 14. Domain Model Direction
 
 The project should converge on structured types such as:
 
@@ -246,7 +268,7 @@ The project should converge on structured types such as:
 
 These should live in shared core modules so every layer uses the same language.
 
-## 14. Analyzer Design
+## 15. Analyzer Design
 
 The analyzer should be valuable even with no LLM connected.
 

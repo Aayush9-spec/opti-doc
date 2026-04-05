@@ -54,6 +54,7 @@ optidock optimize ./my-app
 optidock benchmark ./my-app
 optidock deploy ./my-app
 optidock monitor
+optidock providers
 ```
 
 The CLI should feel:
@@ -62,6 +63,25 @@ The CLI should feel:
 - trustworthy
 - clear about what changed
 - useful even before AI is enabled
+
+## AI Provider Flexibility
+
+OptiDock is being designed to work with multiple model backends instead of hard-coding one vendor.
+
+Planned compatible providers:
+
+- OpenAI
+- Anthropic / Claude
+- Gemini
+- OpenRouter
+- local OpenAI-compatible servers
+- Ollama and similar local model runners
+
+This lets the same optimization and agent workflows run against:
+
+- direct hosted APIs
+- proxy routers like OpenRouter
+- self-hosted local endpoints on your machine
 
 ## High-Level Architecture
 

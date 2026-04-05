@@ -1,6 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use optidock_agent::{default_pipeline_context, moderate_pipeline, run_analysis};
+use optidock_agent::{
+    default_ai_runtime_config, default_pipeline_context, moderate_pipeline, provider_summary,
+    run_analysis,
+};
 use optidock_core::{
     DeploymentStrategy, DockerfileAnalysis, PipelineModerationReport, PipelineStatus, Severity,
 };
@@ -31,6 +34,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    Providers,
 }
 
 #[tokio::main]
@@ -61,9 +65,41 @@ async fn main() -> Result<()> {
                 render_pipeline_report(&report);
             }
         }
+        Commands::Providers => {
+            render_provider_report();
+        }
     }
 
     Ok(())
+}
+
+fn render_provider_report() {
+    let config = default_ai_runtime_config();
+    let active_summary = provider_summary(&config);
+
+    print_header(
+        "OptiDock AI",
+        "Provider runtime",
+        &[
+            ("Active", active_summary.as_str()),
+            ("Timeout", "90 seconds"),
+        ],
+    );
+
+    print_section("Compatible Providers");
+    println!("  {} OpenAI", paint_accent("•"));
+    println!("  {} Anthropic / Claude", paint_accent("•"));
+    println!("  {} Gemini", paint_accent("•"));
+    println!("  {} OpenRouter", paint_accent("•"));
+    println!("  {} Ollama", paint_accent("•"));
+    println!("  {} Local OpenAI-compatible servers", paint_accent("•"));
+
+    print_section("Expected Environment Keys");
+    println!("  {} `OPENAI_API_KEY`", paint_muted("OpenAI"));
+    println!("  {} `ANTHROPIC_API_KEY`", paint_muted("Anthropic"));
+    println!("  {} `GEMINI_API_KEY`", paint_muted("Gemini"));
+    println!("  {} `OPENROUTER_API_KEY`", paint_muted("OpenRouter"));
+    println!("  {} none required by default", paint_muted("Ollama / local"));
 }
 
 fn render_analysis(analysis: &DockerfileAnalysis) {

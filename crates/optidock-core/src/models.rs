@@ -13,6 +13,24 @@ pub struct DockerfileAnalysis {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizationRequest {
+    pub project: ProjectContext,
+    pub instructions: String,
+    pub dockerfile_contents: String,
+    pub findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizationProposal {
+    pub provider: AiProviderKind,
+    pub model: String,
+    pub summary: String,
+    pub optimized_dockerfile: String,
+    pub assumptions: Vec<String>,
+    pub risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub id: String,
     pub severity: Severity,
@@ -65,6 +83,25 @@ pub struct DeploymentPlan {
     pub rollback_trigger: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiProviderConfig {
+    pub kind: AiProviderKind,
+    pub model: String,
+    pub api_base: String,
+    pub api_key_env: Option<String>,
+    pub api_key: Option<String>,
+    pub organization: Option<String>,
+    pub project: Option<String>,
+    pub local: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiRuntimeConfig {
+    pub active_provider: AiProviderConfig,
+    pub fallback_providers: Vec<AiProviderConfig>,
+    pub request_timeout_secs: u64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ServiceRole {
     Api,
@@ -114,6 +151,17 @@ pub enum DeploymentStrategy {
     BlueGreen,
     Canary,
     Recreate,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum AiProviderKind {
+    OpenAi,
+    Anthropic,
+    Gemini,
+    OpenRouter,
+    LocalOpenAiCompatible,
+    Ollama,
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

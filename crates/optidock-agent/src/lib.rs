@@ -1,13 +1,23 @@
 use anyhow::Result;
 use optidock_analyzer::analyze_project;
 use optidock_core::{
-    CiProvider, ContainerService, DeploymentPlan, DeploymentStrategy, DeploymentTarget,
-    DockerfileAnalysis, PipelineContext, PipelineModerationReport, PipelineRecommendation,
-    PipelineStatus, ServiceRole, Severity, TrafficProfile,
+    AiProviderConfig, AiProviderKind, AiRuntimeConfig, CiProvider, ContainerService,
+    DeploymentPlan, DeploymentStrategy, DeploymentTarget, DockerfileAnalysis, OptimizationProposal,
+    OptimizationRequest, PipelineContext, PipelineModerationReport, PipelineRecommendation,
+    PipelineStatus, ProjectContext, ServiceRole, Severity, TrafficProfile,
 };
 
 pub fn run_analysis(path: &str) -> Result<DockerfileAnalysis> {
     analyze_project(path)
+}
+
+pub trait OptimizationProvider {
+    fn provider_kind(&self) -> AiProviderKind;
+    fn generate_optimization(
+        &self,
+        request: &OptimizationRequest,
+        config: &AiProviderConfig,
+    ) -> Result<OptimizationProposal>;
 }
 
 pub fn moderate_pipeline(pipeline: PipelineContext) -> PipelineModerationReport {
@@ -116,6 +126,140 @@ pub fn default_pipeline_context(path: &str) -> PipelineContext {
             deployment: DeploymentTarget::LocalDocker,
             traffic_profile: TrafficProfile::Medium,
         }],
+    }
+}
+
+pub fn default_ai_runtime_config() -> AiRuntimeConfig {
+    AiRuntimeConfig {
+        active_provider: openai_provider(),
+        fallback_providers: vec![
+            openrouter_provider(),
+            anthropic_provider(),
+            gemini_provider(),
+            ollama_provider(),
+        ],
+        request_timeout_secs: 90,
+    }
+}
+
+pub fn build_optimization_request(
+    path: &str,
+    dockerfile_contents: &str,
+    findings: Vec<optidock_core::Finding>,
+) -> OptimizationRequest {
+    OptimizationRequest {
+        project: ProjectContext {
+            path: path.to_string(),
+            dockerfile_path: format!("{path}/Dockerfile"),
+        },
+        instructions: "Optimize this Dockerfile for image size, build efficiency, runtime safety, and deployment readiness without changing application behavior unless necessary.".to_string(),
+        dockerfile_contents: dockerfile_contents.to_string(),
+        findings,
+    }
+}
+
+pub fn provider_summary(config: &AiRuntimeConfig) -> String {
+    let fallback_names = config
+        .fallback_providers
+        .iter()
+        .map(|provider| provider_label(provider.kind))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "Active provider: {} ({}) | Fallbacks: {}",
+        provider_label(config.active_provider.kind),
+        config.active_provider.model,
+        fallback_names
+    )
+}
+
+pub fn detect_provider_from_name(name: &str) -> AiProviderKind {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "openai" => AiProviderKind::OpenAi,
+        "anthropic" | "claude" => AiProviderKind::Anthropic,
+        "gemini" | "google" => AiProviderKind::Gemini,
+        "openrouter" => AiProviderKind::OpenRouter,
+        "ollama" => AiProviderKind::Ollama,
+        "local" | "local-openai" | "lm-studio" | "vllm" => AiProviderKind::LocalOpenAiCompatible,
+        _ => AiProviderKind::Custom,
+    }
+}
+
+pub fn provider_label(kind: AiProviderKind) -> &'static str {
+    match kind {
+        AiProviderKind::OpenAi => "OpenAI",
+        AiProviderKind::Anthropic => "Anthropic",
+        AiProviderKind::Gemini => "Gemini",
+        AiProviderKind::OpenRouter => "OpenRouter",
+        AiProviderKind::LocalOpenAiCompatible => "Local OpenAI-Compatible",
+        AiProviderKind::Ollama => "Ollama",
+        AiProviderKind::Custom => "Custom",
+    }
+}
+
+fn openai_provider() -> AiProviderConfig {
+    AiProviderConfig {
+        kind: AiProviderKind::OpenAi,
+        model: "gpt-4.1-mini".to_string(),
+        api_base: "https://api.openai.com/v1".to_string(),
+        api_key_env: Some("OPENAI_API_KEY".to_string()),
+        api_key: None,
+        organization: None,
+        project: None,
+        local: false,
+    }
+}
+
+fn openrouter_provider() -> AiProviderConfig {
+    AiProviderConfig {
+        kind: AiProviderKind::OpenRouter,
+        model: "openai/gpt-4.1-mini".to_string(),
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+        api_key: None,
+        organization: None,
+        project: None,
+        local: false,
+    }
+}
+
+fn anthropic_provider() -> AiProviderConfig {
+    AiProviderConfig {
+        kind: AiProviderKind::Anthropic,
+        model: "claude-3-5-sonnet-latest".to_string(),
+        api_base: "https://api.anthropic.com".to_string(),
+        api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
+        api_key: None,
+        organization: None,
+        project: None,
+        local: false,
+    }
+}
+
+fn gemini_provider() -> AiProviderConfig {
+    AiProviderConfig {
+        kind: AiProviderKind::Gemini,
+        model: "gemini-2.0-flash".to_string(),
+        api_base: "https://generativelanguage.googleapis.com".to_string(),
+        api_key_env: Some("GEMINI_API_KEY".to_string()),
+        api_key: None,
+        organization: None,
+        project: None,
+        local: false,
+    }
+}
+
+fn ollama_provider() -> AiProviderConfig {
+    AiProviderConfig {
+        kind: AiProviderKind::Ollama,
+        model: "llama3.1".to_string(),
+        api_base: "http://127.0.0.1:11434".to_string(),
+        api_key_env: None,
+        api_key: None,
+        organization: None,
+        project: None,
+        local: true,
     }
 }
 
