@@ -1,0 +1,11 @@
+[package]
+name = "optidock-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+optidock-analyzer = { path = "../optidock-analyzer" }
+optidock-core = { path = "../optidock-core" }
