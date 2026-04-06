@@ -8,7 +8,7 @@ Build a serious container agent platform that helps developers and small teams:
 
 - analyze Dockerfiles and container projects
 - generate safer and smaller image builds
-- benchmark baseline versus optimized variants
+- benchmark baseline versus optimized variants 
 - deploy winning candidates with rollback support
 - manage container workflows from a polished terminal experience
 
