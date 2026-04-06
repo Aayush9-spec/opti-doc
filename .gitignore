@@ -4,3 +4,8 @@
 
 # Rust build output
 target/
+
+# Next.js / frontend build output
+landing/.next/
+landing/node_modules/
+landing/package-lock.json
