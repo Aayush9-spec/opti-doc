@@ -1,3 +1,6 @@
 # macOS metadata
 .DS_Store
 ._*
+
+# Rust build output
+target/

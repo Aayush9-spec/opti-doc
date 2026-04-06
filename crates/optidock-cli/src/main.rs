@@ -5,7 +5,8 @@ use optidock_agent::{
     run_analysis,
 };
 use optidock_core::{
-    DeploymentStrategy, DockerfileAnalysis, PipelineModerationReport, PipelineStatus, Severity,
+    AiRuntimeConfig, DeploymentStrategy, DockerfileAnalysis, PipelineModerationReport,
+    PipelineStatus, Severity,
 };
 use optidock_runner::command_check;
 use std::{env, fs, path::Path};
@@ -312,7 +313,17 @@ fn render_pipeline_report(report: &PipelineModerationReport) {
 
 fn print_header(title: &str, subtitle: &str, fields: &[(&str, &str)]) {
     let width = 78;
+    let banner = ascii_banner();
+
     println!("{}", paint_panel_top(width));
+    for line in banner {
+        println!(
+            "{} {}",
+            paint_panel_side(),
+            pad_line(&paint_brand(line), width - 4)
+        );
+    }
+    println!("{}", paint_panel_divider(width));
     println!(
         "{} {}",
         paint_panel_side(),
@@ -329,6 +340,16 @@ fn print_header(title: &str, subtitle: &str, fields: &[(&str, &str)]) {
     }
 
     println!("{}", paint_panel_bottom(width));
+}
+
+fn ascii_banner() -> [&'static str; 5] {
+    [
+        "  ____        __  _ ____             _    ",
+        " / __ \\____  / /_(_) __ \\____   _____| | __",
+        "/ / / / __ \\/ __/ / / / / __ \\ / ___/ |/_/",
+        "/ /_/ / /_/ / /_/ / /_/ / /_/ // /__/   <  ",
+        "\\____/ .___/\\__/_/_____/\\____/ \\___/_/|_| ",
+    ]
 }
 
 fn print_section(title: &str) {
@@ -361,7 +382,7 @@ fn strategy_label(strategy: DeploymentStrategy) -> &'static str {
     }
 }
 
-fn provider_label_line(config: &optidock_agent::AiRuntimeConfig) -> &str {
+fn provider_label_line(config: &AiRuntimeConfig) -> &str {
     &config.active_provider.model
 }
 
