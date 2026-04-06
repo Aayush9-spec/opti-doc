@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "jsx": "preserve"
+  },
+  "exclude": ["node_modules", ".next", "out", "build"]
+}

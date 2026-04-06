@@ -244,6 +244,7 @@ dependencies = [
  "optidock-agent",
  "optidock-core",
  "optidock-runner",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

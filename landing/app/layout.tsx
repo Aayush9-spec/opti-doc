@@ -53,6 +53,15 @@ export default function RootLayout({
                 </Link>
               ))}
             </nav>
+
+            <div className="site-auth-nav">
+              <Link href="/login" className="nav-link">
+                Login
+              </Link>
+              <Link href="/signup" className="button button-primary">
+                Sign Up
+              </Link>
+            </div>
           </header>
 
           <main className="page-frame">{children}</main>

@@ -8,6 +8,15 @@ pub struct CommandCheck {
     pub detail: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CommandExecution {
+    pub command: String,
+    pub success: bool,
+    pub status: String,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 pub fn verify_docker_available() -> Result<()> {
     let _ = command_version("docker")?;
     Ok(())
@@ -26,6 +35,23 @@ pub fn command_check(name: &str) -> CommandCheck {
             detail: error.to_string(),
         },
     }
+}
+
+pub fn run_shell_command(command: &str) -> Result<CommandExecution> {
+    let output = Command::new("zsh").arg("-lc").arg(command).output()?;
+    let status = output
+        .status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "terminated by signal".to_string());
+
+    Ok(CommandExecution {
+        command: command.to_string(),
+        success: output.status.success(),
+        status,
+        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
 }
 
 fn command_version(name: &str) -> Result<String> {

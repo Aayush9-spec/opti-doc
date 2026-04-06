@@ -8,8 +8,13 @@ use optidock_core::{
     AiRuntimeConfig, DeploymentStrategy, DockerfileAnalysis, PipelineModerationReport,
     PipelineStatus, Severity,
 };
-use optidock_runner::command_check;
-use std::{env, fs, path::Path};
+use optidock_runner::{command_check, run_shell_command, CommandExecution};
+use serde::{Deserialize, Serialize};
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -29,6 +34,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: String,
     },
+    Signup,
+    Login,
+    Logout,
     Analyze {
         #[arg(default_value = ".")]
         path: String,
@@ -43,6 +51,10 @@ enum Commands {
     },
     Providers,
     Doctor,
+    Live {
+        #[arg(default_value = ".")]
+        path: String,
+    },
 }
 
 #[tokio::main]
@@ -57,6 +69,15 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init { path } => {
             init_project(&path)?;
+        }
+        Commands::Signup => {
+            signup_user()?;
+        }
+        Commands::Login => {
+            login_user()?;
+        }
+        Commands::Logout => {
+            logout_user()?;
         }
         Commands::Analyze { path, json } => {
             let analysis = run_analysis(&path)?;
@@ -82,9 +103,218 @@ async fn main() -> Result<()> {
         Commands::Doctor => {
             render_doctor_report();
         }
+        Commands::Live { path } => {
+            run_live_session(&path)?;
+        }
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AuthAccount {
+    full_name: String,
+    email: String,
+    workspace: String,
+    password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AuthSession {
+    email: String,
+    workspace: String,
+}
+
+fn run_live_session(path: &str) -> Result<()> {
+    print_live_header(path);
+    print_section("Live Mode");
+    println!("  {} Chat-style local agent loop is active.", paint_accent("•"));
+    println!("  {} Use `/help` to see commands.", paint_accent("•"));
+    println!("  {} Use `/exit` to leave the session.", paint_accent("•"));
+
+    let stdin = io::stdin();
+    loop {
+        print!("{}", paint_prompt("optidock>"));
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        let bytes_read = stdin.read_line(&mut input)?;
+        if bytes_read == 0 {
+            println!();
+            break;
+        }
+
+        let input = input.trim();
+        if input.is_empty() {
+            continue;
+        }
+
+        match input {
+            "/exit" | "exit" | "quit" => {
+                println!("{} Session closed.", paint_muted("optidock"));
+                break;
+            }
+            "/help" | "help" => render_live_help(),
+            "/doctor" => render_doctor_report(),
+            "/providers" => render_provider_report(),
+            "/analyze" => {
+                let analysis = run_analysis(path)?;
+                render_analysis(&analysis);
+            }
+            "/pipeline" => {
+                let report = moderate_pipeline(default_pipeline_context(path));
+                render_pipeline_report(&report);
+            }
+            _ if input.starts_with("/run ") => {
+                let command = input.trim_start_matches("/run ").trim();
+                run_and_render_command(command)?;
+            }
+            _ if input.starts_with("/analyze ") => {
+                let target = input.trim_start_matches("/analyze ").trim();
+                let analysis = run_analysis(target)?;
+                render_analysis(&analysis);
+            }
+            _ if input.starts_with("/pipeline ") => {
+                let target = input.trim_start_matches("/pipeline ").trim();
+                let report = moderate_pipeline(default_pipeline_context(target));
+                render_pipeline_report(&report);
+            }
+            _ => {
+                render_live_agent_response(input, path)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn render_live_help() {
+    print_section("Available Commands");
+    println!("  {} `optidock signup` create a local operator account", paint_accent("•"));
+    println!("  {} `optidock login` sign in from the terminal", paint_accent("•"));
+    println!("  {} `optidock logout` clear the local session", paint_accent("•"));
+    println!("  {} `/help` show available live-mode commands", paint_accent("•"));
+    println!("  {} `/doctor` inspect local runtime readiness", paint_accent("•"));
+    println!("  {} `/providers` list provider runtime information", paint_accent("•"));
+    println!("  {} `/analyze [path]` analyze a Docker project", paint_accent("•"));
+    println!("  {} `/pipeline [path]` moderate rollout strategy", paint_accent("•"));
+    println!("  {} `/run <command>` execute a shell command live", paint_accent("•"));
+    println!("  {} `/exit` close the live agent session", paint_accent("•"));
+}
+
+fn render_live_agent_response(input: &str, path: &str) -> Result<()> {
+    print_section("Agent");
+
+    if looks_like_shell_command(input) {
+        println!(
+            "  {} That looks like a shell command. Running it directly.",
+            paint_muted("Decision")
+        );
+        run_and_render_command(input)?;
+        return Ok(());
+    }
+
+    if input.contains("analy") || input.contains("dockerfile") {
+        println!(
+            "  {} Interpreting your request as a project analysis for `{}`.",
+            paint_muted("Decision"),
+            path
+        );
+        let analysis = run_analysis(path)?;
+        render_analysis(&analysis);
+        return Ok(());
+    }
+
+    if input.contains("pipeline") || input.contains("deploy") || input.contains("rollout") {
+        println!(
+            "  {} Interpreting your request as a pipeline moderation pass for `{}`.",
+            paint_muted("Decision"),
+            path
+        );
+        let report = moderate_pipeline(default_pipeline_context(path));
+        render_pipeline_report(&report);
+        return Ok(());
+    }
+
+    println!(
+        "  {} I can help with project inspection, pipeline moderation, and live shell commands.",
+        paint_muted("Guide")
+    );
+    println!(
+        "  {} Try `/analyze`, `/pipeline`, or `/run cargo test`.",
+        paint_muted("Next")
+    );
+
+    Ok(())
+}
+
+fn run_and_render_command(command: &str) -> Result<()> {
+    print_section("Command Execution");
+    println!("  {} {}", paint_muted("Command"), command);
+
+    let result = run_shell_command(command)?;
+    render_command_result(&result);
+
+    Ok(())
+}
+
+fn render_command_result(result: &CommandExecution) {
+    let status_badge = if result.success {
+        paint_ok(" SUCCESS ")
+    } else {
+        paint_warn(" FAILED ")
+    };
+
+    println!("  {} exit status {}", status_badge, result.status);
+
+    if !result.stdout.is_empty() {
+        println!("  {}", paint_bold("stdout"));
+        for line in result.stdout.lines() {
+            println!("    {}", line);
+        }
+    }
+
+    if !result.stderr.is_empty() {
+        println!("  {}", paint_bold("stderr"));
+        for line in result.stderr.lines() {
+            println!("    {}", line);
+        }
+    }
+}
+
+fn print_live_header(path: &str) {
+    let auth_status = load_session()
+        .map(|session| format!("Signed in as {}", session.email))
+        .unwrap_or_else(|_| "Not signed in".to_string());
+
+    print_header(
+        "OptiDock Live",
+        "Interactive agent terminal",
+        &[
+            ("Workspace", path),
+            ("Mode", "Chat + terminal execution"),
+            ("Auth", &auth_status),
+        ],
+    );
+}
+
+fn looks_like_shell_command(input: &str) -> bool {
+    [
+        "cargo ",
+        "git ",
+        "docker ",
+        "npm ",
+        "pnpm ",
+        "ls",
+        "pwd",
+        "cat ",
+        "sed ",
+        "find ",
+        "rg ",
+        "./",
+    ]
+    .iter()
+    .any(|prefix| input.starts_with(prefix))
 }
 
 fn init_project(path: &str) -> Result<()> {
@@ -134,6 +364,80 @@ OPENAI_API_KEY=
     Ok(())
 }
 
+fn signup_user() -> Result<()> {
+    print_header(
+        "OptiDock Auth",
+        "Create operator account",
+        &[("Mode", "Local terminal signup"), ("Store", "~/.optidock/auth")],
+    );
+
+    let full_name = prompt_for("Full name")?;
+    let email = prompt_for("Email")?;
+    let workspace = prompt_for("Workspace name")?;
+    let password = prompt_for("Password")?;
+
+    let account = AuthAccount {
+        full_name,
+        email: email.clone(),
+        workspace: workspace.clone(),
+        password,
+    };
+
+    save_account(&account)?;
+    save_session(&AuthSession { email, workspace })?;
+
+    print_section("Signup Complete");
+    println!("  {} Account saved locally.", paint_ok(" READY "));
+    println!("  {} You are now signed in to OptiDock.", paint_accent("•"));
+
+    Ok(())
+}
+
+fn login_user() -> Result<()> {
+    print_header(
+        "OptiDock Auth",
+        "Operator login",
+        &[("Mode", "Local terminal login"), ("Store", "~/.optidock/auth")],
+    );
+
+    let account = load_account()?;
+    let email = prompt_for("Email")?;
+    let password = prompt_for("Password")?;
+
+    if account.email != email || account.password != password {
+        println!("  {} Invalid local credentials.", paint_critical(" DENIED "));
+        anyhow::bail!("login failed");
+    }
+
+    save_session(&AuthSession {
+        email: account.email.clone(),
+        workspace: account.workspace.clone(),
+    })?;
+
+    print_section("Login Complete");
+    println!("  {} Signed in as {}", paint_ok(" READY "), account.email);
+    println!("  {} Workspace {}", paint_muted("Workspace"), account.workspace);
+
+    Ok(())
+}
+
+fn logout_user() -> Result<()> {
+    let session_path = auth_session_path()?;
+    if session_path.exists() {
+        fs::remove_file(&session_path)?;
+    }
+
+    print_header(
+        "OptiDock Auth",
+        "Operator logout",
+        &[("Mode", "Local terminal logout"), ("Status", "Session cleared")],
+    );
+    print_section("Logout Complete");
+    println!("  {} Local session removed.", paint_ok(" DONE "));
+
+    Ok(())
+}
+
 fn render_doctor_report() {
     let cargo = command_check("cargo");
     let rustc = command_check("rustc");
@@ -173,7 +477,24 @@ fn render_doctor_report() {
         }
     }
 
+    print_section("Authentication");
+    match load_session() {
+        Ok(session) => {
+            println!(
+                "  {} {} on {}",
+                paint_ok(" SIGNED IN "),
+                session.email,
+                session.workspace
+            );
+        }
+        Err(_) => {
+            println!("  {} no local OptiDock session", paint_warn(" AUTH "));
+        }
+    }
+
     print_section("Recommended Run");
+    println!("  {} `optidock signup`", paint_accent("•"));
+    println!("  {} `optidock login`", paint_accent("•"));
     println!("  {} `optidock analyze .`", paint_accent("•"));
     println!("  {} `optidock pipeline .`", paint_accent("•"));
 }
@@ -386,6 +707,51 @@ fn provider_label_line(config: &AiRuntimeConfig) -> &str {
     &config.active_provider.model
 }
 
+fn auth_root() -> Result<PathBuf> {
+    let home = env::var("HOME")?;
+    let root = Path::new(&home).join(".optidock").join("auth");
+    fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
+fn auth_account_path() -> Result<PathBuf> {
+    Ok(auth_root()?.join("account.json"))
+}
+
+fn auth_session_path() -> Result<PathBuf> {
+    Ok(auth_root()?.join("session.json"))
+}
+
+fn save_account(account: &AuthAccount) -> Result<()> {
+    let payload = serde_json::to_string_pretty(account)?;
+    fs::write(auth_account_path()?, payload)?;
+    Ok(())
+}
+
+fn load_account() -> Result<AuthAccount> {
+    let payload = fs::read_to_string(auth_account_path()?)?;
+    Ok(serde_json::from_str(&payload)?)
+}
+
+fn save_session(session: &AuthSession) -> Result<()> {
+    let payload = serde_json::to_string_pretty(session)?;
+    fs::write(auth_session_path()?, payload)?;
+    Ok(())
+}
+
+fn load_session() -> Result<AuthSession> {
+    let payload = fs::read_to_string(auth_session_path()?)?;
+    Ok(serde_json::from_str(&payload)?)
+}
+
+fn prompt_for(label: &str) -> Result<String> {
+    print!("{} {}: ", paint_muted("input"), label);
+    io::stdout().flush()?;
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    Ok(value.trim().to_string())
+}
+
 fn path_or_exists(path: &Path) -> &str {
     if path.exists() {
         "created"
@@ -480,4 +846,8 @@ fn paint_panel_bottom(width: usize) -> String {
 
 fn paint_panel_side() -> String {
     paint_accent("│")
+}
+
+fn paint_prompt(value: &str) -> String {
+    format!("\x1b[1;97;100m {value} \x1b[0m ")
 }
