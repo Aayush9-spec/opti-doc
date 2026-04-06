@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background: #050816;
+}
+
+.liquid-ether {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--le-color-0) 32%, transparent), transparent 32%),
+    radial-gradient(circle at 80% 18%, color-mix(in srgb, var(--le-color-1) 34%, transparent), transparent 30%),
+    linear-gradient(180deg, #060915 0%, #050711 100%);
+  isolation: isolate;
+}
+
+.liquid-ether__orb {
+  position: absolute;
+  width: calc(var(--le-cursor-size) * 2.6);
+  height: calc(var(--le-cursor-size) * 2.6);
+  border-radius: 999px;
+  mix-blend-mode: screen;
+  filter: blur(calc(20px + var(--le-viscous) * 0.5px));
+  opacity: 0.88;
+}
+
+.liquid-ether__orb--a {
+  left: 6%;
+  top: 12%;
+  background:
+    radial-gradient(circle at 35% 35%, var(--le-color-1), transparent 48%),
+    radial-gradient(circle at 70% 60%, var(--le-color-0), transparent 58%);
+  animation: liquidDriftA 18s ease-in-out infinite alternate;
+  animation-duration: calc(18s / var(--le-auto-intensity));
+}
+
+.liquid-ether__orb--b {
+  right: 12%;
+  top: 20%;
+  background:
+    radial-gradient(circle at 40% 35%, var(--le-color-2), transparent 44%),
+    radial-gradient(circle at 70% 70%, var(--le-color-1), transparent 58%);
+  animation: liquidDriftB 22s ease-in-out infinite alternate;
+  animation-duration: calc(22s / var(--le-auto-intensity));
+}
+
+.liquid-ether__orb--c {
+  left: 30%;
+  bottom: 6%;
+  width: calc(var(--le-cursor-size) * 3.2);
+  height: calc(var(--le-cursor-size) * 3.2);
+  background:
+    radial-gradient(circle at 45% 35%, var(--le-color-0), transparent 42%),
+    radial-gradient(circle at 70% 70%, var(--le-color-2), transparent 58%);
+  animation: liquidDriftC 20s ease-in-out infinite alternate;
+  animation-duration: calc(20s / var(--le-auto-intensity));
+}
+
+.liquid-ether__glow {
+  position: absolute;
+  inset: 8%;
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--le-color-1) 18%, transparent), transparent 58%),
+    radial-gradient(circle at 30% 40%, color-mix(in srgb, var(--le-color-0) 14%, transparent), transparent 60%);
+  filter: blur(36px);
+  opacity: 0.9;
+}
+
+.liquid-ether__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 52px 52px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.3), black 25%, black 75%, transparent);
+  opacity: 0.22;
+}
+
+@keyframes liquidDriftA {
+  0% {
+    transform: translate3d(-4%, 0%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(28%, 16%, 0) scale(1.18);
+  }
+  100% {
+    transform: translate3d(12%, 54%, 0) scale(0.92);
+  }
+}
+
+@keyframes liquidDriftB {
+  0% {
+    transform: translate3d(0, -3%, 0) scale(0.92);
+  }
+  50% {
+    transform: translate3d(-34%, 24%, 0) scale(1.08);
+  }
+  100% {
+    transform: translate3d(-12%, 60%, 0) scale(1.2);
+  }
+}
+
+@keyframes liquidDriftC {
+  0% {
+    transform: translate3d(-8%, 0, 0) scale(1.02);
+  }
+  50% {
+    transform: translate3d(16%, -22%, 0) scale(1.15);
+  }
+  100% {
+    transform: translate3d(38%, -10%, 0) scale(0.9);
+  }
+}

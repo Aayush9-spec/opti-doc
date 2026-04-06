@@ -64,6 +64,17 @@ The CLI should feel:
 - clear about what changed
 - useful even before AI is enabled
 
+## Install
+
+OptiDock now includes a local installer flow for the CLI:
+
+```bash
+chmod +x scripts/install.sh
+./scripts/install.sh
+```
+
+Installer docs live in [docs/install.md](docs/install.md).
+
 ## AI Provider Flexibility
 
 OptiDock is being designed to work with multiple model backends instead of hard-coding one vendor.
