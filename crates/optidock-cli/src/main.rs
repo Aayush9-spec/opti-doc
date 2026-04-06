@@ -7,6 +7,8 @@ use optidock_agent::{
 use optidock_core::{
     DeploymentStrategy, DockerfileAnalysis, PipelineModerationReport, PipelineStatus, Severity,
 };
+use optidock_runner::command_check;
+use std::{env, fs, path::Path};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -22,6 +24,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    Init {
+        #[arg(default_value = ".")]
+        path: String,
+    },
     Analyze {
         #[arg(default_value = ".")]
         path: String,
@@ -35,6 +41,7 @@ enum Commands {
         json: bool,
     },
     Providers,
+    Doctor,
 }
 
 #[tokio::main]
@@ -47,6 +54,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init { path } => {
+            init_project(&path)?;
+        }
         Commands::Analyze { path, json } => {
             let analysis = run_analysis(&path)?;
 
@@ -68,9 +78,103 @@ async fn main() -> Result<()> {
         Commands::Providers => {
             render_provider_report();
         }
+        Commands::Doctor => {
+            render_doctor_report();
+        }
     }
 
     Ok(())
+}
+
+fn init_project(path: &str) -> Result<()> {
+    let root = Path::new(path);
+    let dockerfile_path = root.join("Dockerfile");
+    let env_path = root.join(".optidock.env");
+
+    if !dockerfile_path.exists() {
+        let starter = r#"FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+EXPOSE 3000
+CMD ["npm", "start"]
+"#;
+        fs::write(&dockerfile_path, starter)?;
+    }
+
+    if !env_path.exists() {
+        let starter = r#"OPTIDOCK_PROVIDER=openai
+OPTIDOCK_FALLBACKS=openrouter,anthropic,gemini,ollama
+OPENAI_API_KEY=
+"#;
+        fs::write(&env_path, starter)?;
+    }
+
+    print_header(
+        "OptiDock AI",
+        "Project bootstrap",
+        &[
+            ("Path", path),
+            ("Dockerfile", path_or_exists(&dockerfile_path)),
+            ("Config", path_or_exists(&env_path)),
+        ],
+    );
+
+    print_section("Next Steps");
+    println!("  {} Run `optidock doctor` to validate local tooling.", paint_accent("•"));
+    println!("  {} Run `optidock analyze {path}` to inspect the Dockerfile.", paint_accent("•"));
+    println!("  {} Edit `.optidock.env` to connect your preferred AI provider.", paint_accent("•"));
+
+    Ok(())
+}
+
+fn render_doctor_report() {
+    let cargo = command_check("cargo");
+    let rustc = command_check("rustc");
+    let docker = command_check("docker");
+    let config = default_ai_runtime_config();
+    let provider_env = config
+        .active_provider
+        .api_key_env
+        .as_deref()
+        .unwrap_or("no key required");
+
+    print_header(
+        "OptiDock AI",
+        "Environment doctor",
+        &[
+            ("Active provider", provider_label_line(&config)),
+            ("Expected key", provider_env),
+        ],
+    );
+
+    print_section("Tooling");
+    render_command_check(&cargo);
+    render_command_check(&rustc);
+    render_command_check(&docker);
+
+    print_section("Provider Configuration");
+    match env::var(provider_env) {
+        Ok(value) if !value.trim().is_empty() => {
+            println!("  {} {} is set", paint_ok(" READY "), provider_env);
+        }
+        _ => {
+            println!(
+                "  {} {} is missing or empty",
+                paint_warn(" CONFIG "),
+                provider_env
+            );
+        }
+    }
+
+    print_section("Recommended Run");
+    println!("  {} `optidock analyze .`", paint_accent("•"));
+    println!("  {} `optidock pipeline .`", paint_accent("•"));
 }
 
 fn render_provider_report() {
@@ -100,6 +204,25 @@ fn render_provider_report() {
     println!("  {} `GEMINI_API_KEY`", paint_muted("Gemini"));
     println!("  {} `OPENROUTER_API_KEY`", paint_muted("OpenRouter"));
     println!("  {} none required by default", paint_muted("Ollama / local"));
+}
+
+fn render_command_check(check: &optidock_runner::CommandCheck) {
+    if check.available {
+        println!(
+            "  {} {}",
+            paint_ok(" READY "),
+            pad_line(&format!("{} {}", paint_bold(&check.name), check.detail), 64)
+        );
+    } else {
+        println!(
+            "  {} {}",
+            paint_warn(" MISSING "),
+            pad_line(
+                &format!("{} {}", paint_bold(&check.name), check.detail),
+                64
+            )
+        );
+    }
 }
 
 fn render_analysis(analysis: &DockerfileAnalysis) {
@@ -235,6 +358,18 @@ fn strategy_label(strategy: DeploymentStrategy) -> &'static str {
         DeploymentStrategy::BlueGreen => "Blue/Green",
         DeploymentStrategy::Canary => "Canary",
         DeploymentStrategy::Recreate => "Recreate",
+    }
+}
+
+fn provider_label_line(config: &optidock_agent::AiRuntimeConfig) -> &str {
+    &config.active_provider.model
+}
+
+fn path_or_exists(path: &Path) -> &str {
+    if path.exists() {
+        "created"
+    } else {
+        "pending"
     }
 }
 
