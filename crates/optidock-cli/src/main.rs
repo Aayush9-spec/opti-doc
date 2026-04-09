@@ -1,4 +1,7 @@
+mod auth;
+
 use anyhow::Result;
+use auth::{doctor_report as oracle_auth_doctor_report, login_operator, signup_operator};
 use clap::{Parser, Subcommand};
 use optidock_agent::{
     default_ai_runtime_config, default_pipeline_context, moderate_pipeline, provider_summary,
@@ -71,10 +74,10 @@ async fn main() -> Result<()> {
             init_project(&path)?;
         }
         Commands::Signup => {
-            signup_user()?;
+            signup_user().await?;
         }
         Commands::Login => {
-            login_user()?;
+            login_user().await?;
         }
         Commands::Logout => {
             logout_user()?;
@@ -101,22 +104,14 @@ async fn main() -> Result<()> {
             render_provider_report();
         }
         Commands::Doctor => {
-            render_doctor_report();
+            render_doctor_report().await;
         }
         Commands::Live { path } => {
-            run_live_session(&path)?;
+            run_live_session(&path).await?;
         }
     }
 
     Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AuthAccount {
-    full_name: String,
-    email: String,
-    workspace: String,
-    password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,10 +120,13 @@ struct AuthSession {
     workspace: String,
 }
 
-fn run_live_session(path: &str) -> Result<()> {
+async fn run_live_session(path: &str) -> Result<()> {
     print_live_header(path);
     print_section("Live Mode");
-    println!("  {} Chat-style local agent loop is active.", paint_accent("•"));
+    println!(
+        "  {} Chat-style local agent loop is active.",
+        paint_accent("•")
+    );
     println!("  {} Use `/help` to see commands.", paint_accent("•"));
     println!("  {} Use `/exit` to leave the session.", paint_accent("•"));
 
@@ -155,7 +153,7 @@ fn run_live_session(path: &str) -> Result<()> {
                 break;
             }
             "/help" | "help" => render_live_help(),
-            "/doctor" => render_doctor_report(),
+            "/doctor" => render_doctor_report().await,
             "/providers" => render_provider_report(),
             "/analyze" => {
                 let analysis = run_analysis(path)?;
@@ -180,7 +178,7 @@ fn run_live_session(path: &str) -> Result<()> {
                 render_pipeline_report(&report);
             }
             _ => {
-                render_live_agent_response(input, path)?;
+                render_live_agent_response(input, path).await?;
             }
         }
     }
@@ -190,19 +188,49 @@ fn run_live_session(path: &str) -> Result<()> {
 
 fn render_live_help() {
     print_section("Available Commands");
-    println!("  {} `optidock signup` create a local operator account", paint_accent("•"));
-    println!("  {} `optidock login` sign in from the terminal", paint_accent("•"));
-    println!("  {} `optidock logout` clear the local session", paint_accent("•"));
-    println!("  {} `/help` show available live-mode commands", paint_accent("•"));
-    println!("  {} `/doctor` inspect local runtime readiness", paint_accent("•"));
-    println!("  {} `/providers` list provider runtime information", paint_accent("•"));
-    println!("  {} `/analyze [path]` analyze a Docker project", paint_accent("•"));
-    println!("  {} `/pipeline [path]` moderate rollout strategy", paint_accent("•"));
-    println!("  {} `/run <command>` execute a shell command live", paint_accent("•"));
-    println!("  {} `/exit` close the live agent session", paint_accent("•"));
+    println!(
+        "  {} `optidock signup` create a local operator account",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `optidock login` sign in from the terminal",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `optidock logout` clear the local session",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `/help` show available live-mode commands",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `/doctor` inspect local runtime readiness",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `/providers` list provider runtime information",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `/analyze [path]` analyze a Docker project",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `/pipeline [path]` moderate rollout strategy",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `/run <command>` execute a shell command live",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `/exit` close the live agent session",
+        paint_accent("•")
+    );
 }
 
-fn render_live_agent_response(input: &str, path: &str) -> Result<()> {
+async fn render_live_agent_response(input: &str, path: &str) -> Result<()> {
     print_section("Agent");
 
     if looks_like_shell_command(input) {
@@ -300,17 +328,7 @@ fn print_live_header(path: &str) {
 
 fn looks_like_shell_command(input: &str) -> bool {
     [
-        "cargo ",
-        "git ",
-        "docker ",
-        "npm ",
-        "pnpm ",
-        "ls",
-        "pwd",
-        "cat ",
-        "sed ",
-        "find ",
-        "rg ",
+        "cargo ", "git ", "docker ", "npm ", "pnpm ", "ls", "pwd", "cat ", "sed ", "find ", "rg ",
         "./",
     ]
     .iter()
@@ -357,18 +375,30 @@ OPENAI_API_KEY=
     );
 
     print_section("Next Steps");
-    println!("  {} Run `optidock doctor` to validate local tooling.", paint_accent("•"));
-    println!("  {} Run `optidock analyze {path}` to inspect the Dockerfile.", paint_accent("•"));
-    println!("  {} Edit `.optidock.env` to connect your preferred AI provider.", paint_accent("•"));
+    println!(
+        "  {} Run `optidock doctor` to validate local tooling.",
+        paint_accent("•")
+    );
+    println!(
+        "  {} Run `optidock analyze {path}` to inspect the Dockerfile.",
+        paint_accent("•")
+    );
+    println!(
+        "  {} Edit `.optidock.env` to connect your preferred AI provider.",
+        paint_accent("•")
+    );
 
     Ok(())
 }
 
-fn signup_user() -> Result<()> {
+async fn signup_user() -> Result<()> {
     print_header(
         "OptiDock Auth",
         "Create operator account",
-        &[("Mode", "Local terminal signup"), ("Store", "~/.optidock/auth")],
+        &[
+            ("Mode", "Oracle-backed terminal signup"),
+            ("Store", "Oracle + local session"),
+        ],
     );
 
     let full_name = prompt_for("Full name")?;
@@ -376,38 +406,42 @@ fn signup_user() -> Result<()> {
     let workspace = prompt_for("Workspace name")?;
     let password = prompt_for("Password")?;
 
-    let account = AuthAccount {
-        full_name,
-        email: email.clone(),
-        workspace: workspace.clone(),
-        password,
-    };
-
-    save_account(&account)?;
+    let account = signup_operator(full_name, email.clone(), workspace.clone(), password).await?;
     save_session(&AuthSession { email, workspace })?;
 
     print_section("Signup Complete");
-    println!("  {} Account saved locally.", paint_ok(" READY "));
+    println!(
+        "  {} Oracle account provisioned for {}.",
+        paint_ok(" READY "),
+        account.email
+    );
     println!("  {} You are now signed in to OptiDock.", paint_accent("•"));
 
     Ok(())
 }
 
-fn login_user() -> Result<()> {
+async fn login_user() -> Result<()> {
     print_header(
         "OptiDock Auth",
         "Operator login",
-        &[("Mode", "Local terminal login"), ("Store", "~/.optidock/auth")],
+        &[
+            ("Mode", "Oracle-backed terminal login"),
+            ("Store", "Oracle + local session"),
+        ],
     );
 
-    let account = load_account()?;
     let email = prompt_for("Email")?;
     let password = prompt_for("Password")?;
-
-    if account.email != email || account.password != password {
-        println!("  {} Invalid local credentials.", paint_critical(" DENIED "));
-        anyhow::bail!("login failed");
-    }
+    let account = match login_operator(&email, &password).await {
+        Ok(account) => account,
+        Err(error) => {
+            println!(
+                "  {} Invalid Oracle credentials.",
+                paint_critical(" DENIED ")
+            );
+            return Err(error);
+        }
+    };
 
     save_session(&AuthSession {
         email: account.email.clone(),
@@ -416,7 +450,11 @@ fn login_user() -> Result<()> {
 
     print_section("Login Complete");
     println!("  {} Signed in as {}", paint_ok(" READY "), account.email);
-    println!("  {} Workspace {}", paint_muted("Workspace"), account.workspace);
+    println!(
+        "  {} Workspace {}",
+        paint_muted("Workspace"),
+        account.workspace
+    );
 
     Ok(())
 }
@@ -430,7 +468,10 @@ fn logout_user() -> Result<()> {
     print_header(
         "OptiDock Auth",
         "Operator logout",
-        &[("Mode", "Local terminal logout"), ("Status", "Session cleared")],
+        &[
+            ("Mode", "Local terminal logout"),
+            ("Status", "Session cleared"),
+        ],
     );
     print_section("Logout Complete");
     println!("  {} Local session removed.", paint_ok(" DONE "));
@@ -438,7 +479,7 @@ fn logout_user() -> Result<()> {
     Ok(())
 }
 
-fn render_doctor_report() {
+async fn render_doctor_report() {
     let cargo = command_check("cargo");
     let rustc = command_check("rustc");
     let docker = command_check("docker");
@@ -492,6 +533,16 @@ fn render_doctor_report() {
         }
     }
 
+    let oracle_report = oracle_auth_doctor_report().await;
+    print_section("Oracle Auth");
+    if !oracle_report.env_ready {
+        println!("  {} {}", paint_warn(" CONFIG "), oracle_report.detail);
+    } else if oracle_report.connection_ready {
+        println!("  {} {}", paint_ok(" READY "), oracle_report.detail);
+    } else {
+        println!("  {} {}", paint_warn(" DB "), oracle_report.detail);
+    }
+
     print_section("Recommended Run");
     println!("  {} `optidock signup`", paint_accent("•"));
     println!("  {} `optidock login`", paint_accent("•"));
@@ -525,7 +576,10 @@ fn render_provider_report() {
     println!("  {} `ANTHROPIC_API_KEY`", paint_muted("Anthropic"));
     println!("  {} `GEMINI_API_KEY`", paint_muted("Gemini"));
     println!("  {} `OPENROUTER_API_KEY`", paint_muted("OpenRouter"));
-    println!("  {} none required by default", paint_muted("Ollama / local"));
+    println!(
+        "  {} none required by default",
+        paint_muted("Ollama / local")
+    );
 }
 
 fn render_command_check(check: &optidock_runner::CommandCheck) {
@@ -539,10 +593,7 @@ fn render_command_check(check: &optidock_runner::CommandCheck) {
         println!(
             "  {} {}",
             paint_warn(" MISSING "),
-            pad_line(
-                &format!("{} {}", paint_bold(&check.name), check.detail),
-                64
-            )
+            pad_line(&format!("{} {}", paint_bold(&check.name), check.detail), 64)
         );
     }
 }
@@ -551,7 +602,10 @@ fn render_analysis(analysis: &DockerfileAnalysis) {
     print_header(
         "OptiDock AI",
         "Docker analysis",
-        &[("Project", &analysis.context.path), ("Dockerfile", &analysis.context.dockerfile_path)],
+        &[
+            ("Project", &analysis.context.path),
+            ("Dockerfile", &analysis.context.dockerfile_path),
+        ],
     );
 
     print_section("Findings");
@@ -648,7 +702,10 @@ fn print_header(title: &str, subtitle: &str, fields: &[(&str, &str)]) {
     println!(
         "{} {}",
         paint_panel_side(),
-        pad_line(&format!("{}  {}", paint_brand(title), paint_muted(subtitle)), width - 4)
+        pad_line(
+            &format!("{}  {}", paint_brand(title), paint_muted(subtitle)),
+            width - 4
+        )
     );
     println!("{}", paint_panel_divider(width));
 
@@ -708,29 +765,14 @@ fn provider_label_line(config: &AiRuntimeConfig) -> &str {
 }
 
 fn auth_root() -> Result<PathBuf> {
-    let home = env::var("HOME")?;
+    let home = env::var("HOME").or_else(|_| env::var("USERPROFILE"))?;
     let root = Path::new(&home).join(".optidock").join("auth");
     fs::create_dir_all(&root)?;
     Ok(root)
 }
 
-fn auth_account_path() -> Result<PathBuf> {
-    Ok(auth_root()?.join("account.json"))
-}
-
 fn auth_session_path() -> Result<PathBuf> {
     Ok(auth_root()?.join("session.json"))
-}
-
-fn save_account(account: &AuthAccount) -> Result<()> {
-    let payload = serde_json::to_string_pretty(account)?;
-    fs::write(auth_account_path()?, payload)?;
-    Ok(())
-}
-
-fn load_account() -> Result<AuthAccount> {
-    let payload = fs::read_to_string(auth_account_path()?)?;
-    Ok(serde_json::from_str(&payload)?)
 }
 
 fn save_session(session: &AuthSession) -> Result<()> {

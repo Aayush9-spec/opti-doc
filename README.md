@@ -75,6 +75,19 @@ chmod +x scripts/install.sh
 
 Installer docs live in [docs/install.md](docs/install.md).
 
+## Oracle CLI Auth
+
+`optidock signup` and `optidock login` can use Oracle as the auth source of truth.
+Set these environment variables before running the CLI:
+
+```bash
+OPTIDOCK_ORACLE_USER=your_schema_user
+OPTIDOCK_ORACLE_PASSWORD=your_schema_password
+OPTIDOCK_ORACLE_CONNECT_STRING=host:port/service_name
+```
+
+Run `optidock doctor` to verify the CLI can reach Oracle and bootstrap its auth table.
+
 ## AI Provider Flexibility
 
 OptiDock is being designed to work with multiple model backends instead of hard-coding one vendor.
