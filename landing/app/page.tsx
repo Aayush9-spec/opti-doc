@@ -1,3 +1,4 @@
+import { createClient } from "@/utils/supabase/server";
 import Link from "next/link";
 
 const signals = [
@@ -13,7 +14,15 @@ optidock analyze ./my-app
 optidock pipeline ./my-app
 optidock providers`;
 
-export default function HomePage() {
+type Todo = {
+  id: string | number;
+  name: string;
+};
+
+export default async function HomePage() {
+  const supabase = await createClient();
+  const { data: todos } = await supabase.from("todos").select("id,name").limit(5);
+
   return (
     <div className="page-stack">
       <section className="hero-grid">
@@ -104,6 +113,24 @@ optidock analyze .`}</code>
             <li>Moderate rollout strategy before promotion.</li>
           </ol>
         </article>
+      </section>
+
+      <section className="panel">
+        <div className="section-heading">
+          <p className="eyebrow">Supabase</p>
+          <h2>Live todo data</h2>
+        </div>
+        {todos && todos.length > 0 ? (
+          <ul className="step-list">
+            {(todos as Todo[]).map((todo) => (
+              <li key={todo.id}>{todo.name}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="body-copy">
+            No todos were returned from Supabase yet.
+          </p>
+        )}
       </section>
     </div>
   );

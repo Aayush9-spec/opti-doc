@@ -5,6 +5,12 @@
 # Rust build output
 target/
 
+# Local environment secrets
+.env
+.optidock.env
+landing/.env
+landing/.env.local
+
 # Next.js / frontend build output
 landing/.next/
 landing/node_modules/

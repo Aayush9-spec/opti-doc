@@ -4,8 +4,10 @@ use optidock_core::{
     AiProviderConfig, AiProviderKind, AiRuntimeConfig, CiProvider, ContainerService,
     DeploymentPlan, DeploymentStrategy, DeploymentTarget, DockerfileAnalysis, OptimizationProposal,
     OptimizationRequest, PipelineContext, PipelineModerationReport, PipelineRecommendation,
-    PipelineStatus, ProjectContext, ServiceRole, Severity, TrafficProfile,
+    PipelineStatus, ProjectContext, PromptLibrary, ServiceRole, Severity, TrafficProfile,
+    default_prompt_library,
 };
+use std::collections::BTreeMap;
 
 pub fn run_analysis(path: &str) -> Result<DockerfileAnalysis> {
     analyze_project(path)
@@ -18,6 +20,44 @@ pub trait OptimizationProvider {
         request: &OptimizationRequest,
         config: &AiProviderConfig,
     ) -> Result<OptimizationProposal>;
+}
+
+pub fn saved_prompt_library() -> PromptLibrary {
+    default_prompt_library()
+}
+
+pub fn build_chat_prompt(user_input: &str, project_context: Option<&str>) -> optidock_core::PromptPack {
+    let mut values = BTreeMap::new();
+    values.insert("user_input".to_string(), user_input.to_string());
+
+    if let Some(project_context) = project_context {
+        values.insert("project_context".to_string(), project_context.to_string());
+    }
+
+    saved_prompt_library()
+        .build_pack("chat-default", &values)
+        .expect("default chat prompt should exist")
+}
+
+pub fn build_architecture_prompt(
+    user_input: &str,
+    project_context: Option<&str>,
+    module_context: Option<&str>,
+) -> optidock_core::PromptPack {
+    let mut values = BTreeMap::new();
+    values.insert("user_input".to_string(), user_input.to_string());
+
+    if let Some(project_context) = project_context {
+        values.insert("project_context".to_string(), project_context.to_string());
+    }
+
+    if let Some(module_context) = module_context {
+        values.insert("module_context".to_string(), module_context.to_string());
+    }
+
+    saved_prompt_library()
+        .build_pack("systems-architecture", &values)
+        .expect("systems architecture prompt should exist")
 }
 
 pub fn moderate_pipeline(pipeline: PipelineContext) -> PipelineModerationReport {

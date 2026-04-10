@@ -102,6 +102,28 @@ pub struct AiRuntimeConfig {
     pub request_timeout_secs: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatContextRecord {
+    pub context_id: Option<i64>,
+    pub user_id: i64,
+    pub session_key: Option<String>,
+    pub context_label: Option<String>,
+    pub context_payload: Option<String>,
+    pub prompt_text: String,
+    pub response_text: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewChatContextRecord {
+    pub email: String,
+    pub session_key: Option<String>,
+    pub context_label: Option<String>,
+    pub context_payload: Option<String>,
+    pub prompt_text: String,
+    pub response_text: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ServiceRole {
     Api,

@@ -75,18 +75,19 @@ chmod +x scripts/install.sh
 
 Installer docs live in [docs/install.md](docs/install.md).
 
-## Oracle CLI Auth
+## Supabase CLI Auth
 
-`optidock signup` and `optidock login` can use Oracle as the auth source of truth.
+`optidock signup` and `optidock login` use Supabase as the auth and chat storage source of truth.
 Set these environment variables before running the CLI:
 
 ```bash
-OPTIDOCK_ORACLE_USER=your_schema_user
-OPTIDOCK_ORACLE_PASSWORD=your_schema_password
-OPTIDOCK_ORACLE_CONNECT_STRING=host:port/service_name
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your_publishable_key
 ```
 
-Run `optidock doctor` to verify the CLI can reach Oracle and bootstrap its auth table.
+Run `optidock doctor` to verify the CLI can reach Supabase.
+When a signed-in operator uses live mode, OptiDock can persist prompt/response context
+into Supabase through the `optidock_chat_context` table.
 
 ## AI Provider Flexibility
 

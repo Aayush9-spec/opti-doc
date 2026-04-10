@@ -1,17 +1,22 @@
 mod auth;
 
 use anyhow::Result;
-use auth::{doctor_report as oracle_auth_doctor_report, login_operator, signup_operator};
+use auth::{
+    doctor_report as db_auth_doctor_report, login_operator, recent_chat_context,
+    signup_operator, store_chat_context,
+};
 use clap::{Parser, Subcommand};
 use optidock_agent::{
-    default_ai_runtime_config, default_pipeline_context, moderate_pipeline, provider_summary,
-    run_analysis,
+    build_architecture_prompt, build_chat_prompt, default_ai_runtime_config,
+    default_pipeline_context, moderate_pipeline, provider_summary, run_analysis,
 };
 use optidock_core::{
-    AiRuntimeConfig, DeploymentStrategy, DockerfileAnalysis, PipelineModerationReport,
-    PipelineStatus, Severity,
+    AiRuntimeConfig, DeploymentStrategy, DockerfileAnalysis, NewChatContextRecord,
+    PipelineModerationReport, PipelineStatus, Severity,
 };
-use optidock_runner::{command_check, run_shell_command, CommandExecution};
+use optidock_runner::{
+    command_check, evaluate_command_policy, run_shell_command, CommandExecution, CommandRisk,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     env, fs,
@@ -62,6 +67,8 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .without_time()
@@ -268,10 +275,24 @@ async fn render_live_agent_response(input: &str, path: &str) -> Result<()> {
         "  {} I can help with project inspection, pipeline moderation, and live shell commands.",
         paint_muted("Guide")
     );
+    let prompt_pack = build_chat_prompt(input, Some(path));
+    let architecture_pack = build_architecture_prompt(input, Some(path), Some("live-agent-response"));
+    println!(
+        "  {} Using saved prompt preset `{}`.",
+        paint_muted("Prompt"),
+        prompt_pack.prompt_id
+    );
+    println!(
+        "  {} Architecture preset available as `{}`.",
+        paint_muted("Prompt"),
+        architecture_pack.prompt_id
+    );
     println!(
         "  {} Try `/analyze`, `/pipeline`, or `/run cargo test`.",
         paint_muted("Next")
     );
+
+    persist_live_chat_context(input, path, &prompt_pack.prompt_id).await;
 
     Ok(())
 }
@@ -279,6 +300,15 @@ async fn render_live_agent_response(input: &str, path: &str) -> Result<()> {
 fn run_and_render_command(command: &str) -> Result<()> {
     print_section("Command Execution");
     println!("  {} {}", paint_muted("Command"), command);
+
+    let policy = evaluate_command_policy(command);
+    if matches!(policy.risk, CommandRisk::NeedsApproval) && !confirm_unsafe_command(command, policy.reason.as_deref())? {
+        println!(
+            "  {} Command blocked until the operator grants permission.",
+            paint_warn(" BLOCKED ")
+        );
+        return Ok(());
+    }
 
     let result = run_shell_command(command)?;
     render_command_result(&result);
@@ -360,6 +390,8 @@ CMD ["npm", "start"]
         let starter = r#"OPTIDOCK_PROVIDER=openai
 OPTIDOCK_FALLBACKS=openrouter,anthropic,gemini,ollama
 OPENAI_API_KEY=
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 "#;
         fs::write(&env_path, starter)?;
     }
@@ -533,14 +565,14 @@ async fn render_doctor_report() {
         }
     }
 
-    let oracle_report = oracle_auth_doctor_report().await;
-    print_section("Oracle Auth");
-    if !oracle_report.env_ready {
-        println!("  {} {}", paint_warn(" CONFIG "), oracle_report.detail);
-    } else if oracle_report.connection_ready {
-        println!("  {} {}", paint_ok(" READY "), oracle_report.detail);
+    let db_report = db_auth_doctor_report().await;
+    print_section("Supabase Auth");
+    if !db_report.env_ready {
+        println!("  {} {}", paint_warn(" CONFIG "), db_report.detail);
+    } else if db_report.connection_ready {
+        println!("  {} {}", paint_ok(" READY "), db_report.detail);
     } else {
-        println!("  {} {}", paint_warn(" DB "), oracle_report.detail);
+        println!("  {} {}", paint_warn(" DB "), db_report.detail);
     }
 
     print_section("Recommended Run");
@@ -548,6 +580,28 @@ async fn render_doctor_report() {
     println!("  {} `optidock login`", paint_accent("•"));
     println!("  {} `optidock analyze .`", paint_accent("•"));
     println!("  {} `optidock pipeline .`", paint_accent("•"));
+    if let Ok(session) = load_session() {
+        match recent_chat_context(&session.email, 3).await {
+            Ok(records) if !records.is_empty() => {
+                print_section("Recent Supabase Chat Context");
+                for record in records {
+                    let label = record
+                        .context_label
+                        .unwrap_or_else(|| "chat-entry".to_string());
+                    println!(
+                        "  {} {}",
+                        paint_accent("â€¢"),
+                        format!("{label} -> {}", truncate_line(&record.prompt_text, 56))
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                print_section("Recent Supabase Chat Context");
+                println!("  {} {}", paint_warn(" DB "), error);
+            }
+        }
+    }
 }
 
 fn render_provider_report() {
@@ -794,6 +848,50 @@ fn prompt_for(label: &str) -> Result<String> {
     Ok(value.trim().to_string())
 }
 
+fn confirm_unsafe_command(command: &str, reason: Option<&str>) -> Result<bool> {
+    print_section("Permission Required");
+    println!(
+        "  {} {}",
+        paint_warn(" UNSAFE "),
+        "This command needs explicit operator approval."
+    );
+    println!("  {} {}", paint_muted("Command"), command);
+
+    if let Some(reason) = reason {
+        println!("  {} {}", paint_muted("Reason"), reason);
+    }
+
+    print!("{} Approve? Type `yes` to continue: ", paint_muted("input"));
+    io::stdout().flush()?;
+
+    let mut approval = String::new();
+    io::stdin().read_line(&mut approval)?;
+    Ok(approval.trim().eq_ignore_ascii_case("yes"))
+}
+
+async fn persist_live_chat_context(input: &str, path: &str, prompt_id: &str) {
+    let Ok(session) = load_session() else {
+        return;
+    };
+
+    let record = NewChatContextRecord {
+        email: session.email,
+        session_key: Some("live-mode".to_string()),
+        context_label: Some(prompt_id.to_string()),
+        context_payload: Some(path.to_string()),
+        prompt_text: input.to_string(),
+        response_text: Some(format!("Preset selected: {prompt_id}")),
+    };
+
+    if let Err(error) = store_chat_context(record).await {
+        println!(
+            "  {} {}",
+            paint_warn(" DB "),
+            format!("Supabase chat persistence skipped: {error}")
+        );
+    }
+}
+
 fn path_or_exists(path: &Path) -> &str {
     if path.exists() {
         "created"
@@ -806,6 +904,17 @@ fn pad_line(content: &str, width: usize) -> String {
     let visible = strip_ansi(content).chars().count();
     let padding = width.saturating_sub(visible);
     format!("{content}{}", " ".repeat(padding))
+}
+
+fn truncate_line(content: &str, max_chars: usize) -> String {
+    let mut chars = content.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 fn strip_ansi(input: &str) -> String {
