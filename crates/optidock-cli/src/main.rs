@@ -127,6 +127,14 @@ struct AuthSession {
     workspace: String,
 }
 
+#[derive(Debug, Clone)]
+struct LiveUiState {
+    workspace: String,
+    auth_status: String,
+    api_status: String,
+    last_command: Option<CommandExecution>,
+}
+
 async fn run_live_session(path: &str) -> Result<()> {
     print_live_header(path);
     print_section("Live Mode");
@@ -428,8 +436,8 @@ async fn signup_user() -> Result<()> {
         "OptiDock Auth",
         "Create operator account",
         &[
-            ("Mode", "Oracle-backed terminal signup"),
-            ("Store", "Oracle + local session"),
+            ("Mode", "Supabase-backed terminal signup"),
+            ("Store", "Supabase + local session"),
         ],
     );
 
@@ -443,7 +451,7 @@ async fn signup_user() -> Result<()> {
 
     print_section("Signup Complete");
     println!(
-        "  {} Oracle account provisioned for {}.",
+        "  {} Supabase account provisioned for {}.",
         paint_ok(" READY "),
         account.email
     );
@@ -457,8 +465,8 @@ async fn login_user() -> Result<()> {
         "OptiDock Auth",
         "Operator login",
         &[
-            ("Mode", "Oracle-backed terminal login"),
-            ("Store", "Oracle + local session"),
+            ("Mode", "Supabase-backed terminal login"),
+            ("Store", "Supabase + local session"),
         ],
     );
 
@@ -468,7 +476,7 @@ async fn login_user() -> Result<()> {
         Ok(account) => account,
         Err(error) => {
             println!(
-                "  {} Invalid Oracle credentials.",
+                "  {} Invalid Supabase credentials.",
                 paint_critical(" DENIED ")
             );
             return Err(error);
