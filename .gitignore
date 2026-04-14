@@ -15,3 +15,8 @@ landing/.env.local
 landing/.next/
 landing/node_modules/
 landing/package-lock.json
+
+# GCP service account keys (never commit these)
+*.json.key
+gcp-sa-key.json
+service-account*.json

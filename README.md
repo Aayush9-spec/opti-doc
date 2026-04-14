@@ -163,6 +163,51 @@ If time allows, add deploy and rollback after validation.
 5. build and benchmark runner
 6. deploy and monitor loop
 
+
+## Google Cloud Platform Deployment
+
+OptiDock AI is deployed to **Google Cloud Run** via GitHub Actions CI/CD.
+
+### Architecture
+
+```
+GitHub Push -> GitHub Actions -> Artifact Registry -> Cloud Run
+                                    |
+                           +--------+--------+
+                           |                 |
+                     optidock-cli      optidock-landing
+                     (Rust API)        (Next.js)
+```
+
+### Services
+
+| Service | Stack | Cloud Run Port |
+|---------|-------|---------------|
+| `optidock-cli` | Rust binary with HTTP API | 8080 |
+| `optidock-landing` | Next.js standalone | 3000 |
+
+### API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | Service status and version |
+| `GET /health` | Health check |
+| `GET /analyze` | Dockerfile analysis |
+| `GET /pipeline` | Pipeline moderation report |
+| `GET /providers` | AI provider configuration |
+
+### Deploy
+
+Push to `main` triggers automatic deployment:
+
+```bash
+git add .
+git commit -m "deploy"
+git push origin main
+```
+
+Full setup guide: [docs/gcp-deployment.md](docs/gcp-deployment.md)
+
 ## Source Of Truth
 
 Use [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) as the canonical product and architecture reference while building. It contains the detailed roadmap, module responsibilities, and decision rules for the project.

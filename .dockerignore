@@ -1,0 +1,11 @@
+target/
+.git/
+.env
+.env.local
+.optidock.env
+landing/
+docs/
+*.md
+.DS_Store
+.gitignore
+scripts/

@@ -5,6 +5,13 @@ use auth::{
     doctor_report as db_auth_doctor_report, login_operator, recent_chat_context,
     signup_operator, store_chat_context,
 };
+use axum::{
+    extract::Query,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
 use clap::{Parser, Subcommand};
 use optidock_agent::{
     build_architecture_prompt, build_chat_prompt, default_ai_runtime_config,
@@ -21,8 +28,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     env, fs,
     io::{self, Write},
+    net::SocketAddr,
     path::{Path, PathBuf},
 };
+use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -62,6 +71,11 @@ enum Commands {
     Live {
         #[arg(default_value = ".")]
         path: String,
+    },
+    /// Start a lightweight HTTP API server (used by Cloud Run)
+    Serve {
+        #[arg(long, default_value = "8080")]
+        port: u16,
     },
 }
 
@@ -115,6 +129,9 @@ async fn main() -> Result<()> {
         }
         Commands::Live { path } => {
             run_live_session(&path).await?;
+        }
+        Commands::Serve { port } => {
+            run_http_server(port).await?;
         }
     }
 
@@ -200,6 +217,92 @@ async fn run_live_session(path: &str) -> Result<()> {
 
     Ok(())
 }
+
+// ── HTTP Serve Mode (Cloud Run) ──────────────────────────────────────
+
+async fn run_http_server(port: u16) -> Result<()> {
+    print_header(
+        "OptiDock AI",
+        "HTTP serve mode",
+        &[
+            ("Port", &port.to_string()),
+            ("Mode", "Cloud Run API"),
+        ],
+    );
+
+    let app = Router::new()
+        .route("/", get(handle_root))
+        .route("/health", get(handle_health))
+        .route("/analyze", get(handle_analyze))
+        .route("/pipeline", get(handle_pipeline))
+        .route("/providers", get(handle_providers))
+        .layer(CorsLayer::permissive());
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    println!("  {} Listening on http://{}", paint_ok(" READY "), addr);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct ApiStatus {
+    service: &'static str,
+    version: &'static str,
+    status: &'static str,
+    endpoints: Vec<&'static str>,
+}
+
+async fn handle_root() -> impl IntoResponse {
+    Json(ApiStatus {
+        service: "OptiDock AI",
+        version: env!("CARGO_PKG_VERSION"),
+        status: "running",
+        endpoints: vec!["/", "/health", "/analyze", "/pipeline", "/providers"],
+    })
+}
+
+async fn handle_health() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+}
+
+#[derive(Deserialize)]
+struct AnalyzeParams {
+    path: Option<String>,
+}
+
+async fn handle_analyze(Query(params): Query<AnalyzeParams>) -> impl IntoResponse {
+    let path = params.path.unwrap_or_else(|| "./sample".to_string());
+    match run_analysis(&path) {
+        Ok(analysis) => (StatusCode::OK, Json(serde_json::to_value(analysis).unwrap())),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": err.to_string() })),
+        ),
+    }
+}
+
+async fn handle_pipeline() -> impl IntoResponse {
+    let ctx = default_pipeline_context("./sample");
+    let report = moderate_pipeline(ctx);
+    Json(serde_json::to_value(report).unwrap())
+}
+
+async fn handle_providers() -> impl IntoResponse {
+    let config = default_ai_runtime_config();
+    let summary = provider_summary(&config);
+    Json(serde_json::json!({
+        "active_provider": config.active_provider.model,
+        "summary": summary,
+        "compatible": [
+            "OpenAI", "Anthropic / Claude", "Gemini",
+            "OpenRouter", "Ollama", "Local OpenAI-compatible"
+        ]
+    }))
+}
+
 
 fn render_live_help() {
     print_section("Available Commands");
