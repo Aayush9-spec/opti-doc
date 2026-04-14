@@ -7,3 +7,4 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+optidock-core = { path = "../optidock-core" }

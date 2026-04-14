@@ -7,5 +7,6 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+serde_json.workspace = true
 optidock-analyzer = { path = "../optidock-analyzer" }
 optidock-core = { path = "../optidock-core" }

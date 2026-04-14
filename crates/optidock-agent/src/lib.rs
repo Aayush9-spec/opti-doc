@@ -1,16 +1,25 @@
 use anyhow::Result;
-use optidock_analyzer::analyze_project;
+use optidock_analyzer::{analyze_project, security_audit as run_security_audit, generate_optimized_dockerfile};
 use optidock_core::{
     AiProviderConfig, AiProviderKind, AiRuntimeConfig, CiProvider, ContainerService,
     DeploymentPlan, DeploymentStrategy, DeploymentTarget, DockerfileAnalysis, OptimizationProposal,
-    OptimizationRequest, PipelineContext, PipelineModerationReport, PipelineRecommendation,
-    PipelineStatus, ProjectContext, PromptLibrary, ServiceRole, Severity, TrafficProfile,
-    default_prompt_library,
+    OptimizationRequest, OptimizedDockerfile, PipelineContext, PipelineModerationReport,
+    PipelineRecommendation, PipelineStatus, ProjectContext, PromptLibrary, SecurityAudit,
+    ServiceRole, Severity, TrafficProfile, default_prompt_library,
 };
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 pub fn run_analysis(path: &str) -> Result<DockerfileAnalysis> {
     analyze_project(path)
+}
+
+pub fn run_security_scan(path: &str) -> Result<SecurityAudit> {
+    run_security_audit(path)
+}
+
+pub fn run_optimize(path: &str) -> Result<OptimizedDockerfile> {
+    generate_optimized_dockerfile(path)
 }
 
 pub trait OptimizationProvider {
@@ -169,16 +178,124 @@ pub fn default_pipeline_context(path: &str) -> PipelineContext {
     }
 }
 
+// ── LLM Provider System ─────────────────────────────────────────────
+//
+// Default: Gemini 2.0 Flash (free tier, generous limits)
+// Override: OPTIDOCK_PROVIDER=anthropic, OPTIDOCK_MODEL=claude-3-opus, etc.
+// Config:  ~/.optidock/provider.json persists user choice
+
 pub fn default_ai_runtime_config() -> AiRuntimeConfig {
+    let active = resolve_active_provider();
+    let active_kind = active.kind;
+
+    let mut fallbacks: Vec<AiProviderConfig> = all_providers()
+        .into_iter()
+        .filter(|p| p.kind != active_kind)
+        .collect();
+
+    // Put free/local providers first in fallback order
+    fallbacks.sort_by_key(|p| match p.kind {
+        AiProviderKind::Ollama => 0,
+        AiProviderKind::LlamaCpp => 1,
+        AiProviderKind::Gemini => 2,
+        AiProviderKind::Groq => 3,
+        AiProviderKind::OpenRouter => 4,
+        AiProviderKind::OpenAi => 5,
+        AiProviderKind::Anthropic => 6,
+        _ => 99,
+    });
+
     AiRuntimeConfig {
-        active_provider: openai_provider(),
-        fallback_providers: vec![
-            openrouter_provider(),
-            anthropic_provider(),
-            gemini_provider(),
-            ollama_provider(),
-        ],
+        active_provider: active,
+        fallback_providers: fallbacks,
         request_timeout_secs: 90,
+    }
+}
+
+/// Returns all supported LLM providers
+pub fn all_providers() -> Vec<AiProviderConfig> {
+    vec![
+        gemini_provider(),
+        openai_provider(),
+        anthropic_provider(),
+        openrouter_provider(),
+        groq_provider(),
+        ollama_provider(),
+        llamacpp_provider(),
+        local_openai_provider(),
+    ]
+}
+
+/// Resolve which provider to use based on:
+/// 1. OPTIDOCK_PROVIDER env var
+/// 2. Saved config file (~/.optidock/provider.json)
+/// 3. Default: Gemini 2.0 Flash (free)
+fn resolve_active_provider() -> AiProviderConfig {
+    // Check env var first
+    if let Ok(provider_name) = std::env::var("OPTIDOCK_PROVIDER") {
+        let kind = detect_provider_from_name(&provider_name);
+        let model_override = std::env::var("OPTIDOCK_MODEL").ok();
+        let mut config = provider_by_kind(kind);
+        if let Some(model) = model_override {
+            config.model = model;
+        }
+        return config;
+    }
+
+    // Check saved config
+    if let Some(saved) = load_saved_provider() {
+        return saved;
+    }
+
+    // Default: Gemini 2.0 Flash (free tier)
+    gemini_provider()
+}
+
+/// Get the config file path
+fn provider_config_path() -> PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".optidock").join("provider.json")
+}
+
+/// Save provider choice to disk
+pub fn save_provider_config(provider_name: &str, model: Option<&str>) -> Result<()> {
+    let kind = detect_provider_from_name(provider_name);
+    let mut config = provider_by_kind(kind);
+    if let Some(m) = model {
+        config.model = m.to_string();
+    }
+
+    let config_path = provider_config_path();
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let json = serde_json::to_string_pretty(&config)?;
+    std::fs::write(&config_path, json)?;
+    Ok(())
+}
+
+/// Load saved provider from disk
+fn load_saved_provider() -> Option<AiProviderConfig> {
+    let config_path = provider_config_path();
+    let content = std::fs::read_to_string(config_path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Maps a provider kind back to a default config
+fn provider_by_kind(kind: AiProviderKind) -> AiProviderConfig {
+    match kind {
+        AiProviderKind::OpenAi => openai_provider(),
+        AiProviderKind::Anthropic => anthropic_provider(),
+        AiProviderKind::Gemini => gemini_provider(),
+        AiProviderKind::OpenRouter => openrouter_provider(),
+        AiProviderKind::Groq => groq_provider(),
+        AiProviderKind::Ollama => ollama_provider(),
+        AiProviderKind::LlamaCpp => llamacpp_provider(),
+        AiProviderKind::LocalOpenAiCompatible => local_openai_provider(),
+        AiProviderKind::Custom => openai_provider(),
     }
 }
 
@@ -216,12 +333,14 @@ pub fn provider_summary(config: &AiRuntimeConfig) -> String {
 
 pub fn detect_provider_from_name(name: &str) -> AiProviderKind {
     match name.trim().to_ascii_lowercase().as_str() {
-        "openai" => AiProviderKind::OpenAi,
+        "openai" | "chatgpt" | "gpt" => AiProviderKind::OpenAi,
         "anthropic" | "claude" => AiProviderKind::Anthropic,
         "gemini" | "google" => AiProviderKind::Gemini,
         "openrouter" => AiProviderKind::OpenRouter,
+        "groq" => AiProviderKind::Groq,
         "ollama" => AiProviderKind::Ollama,
-        "local" | "local-openai" | "lm-studio" | "vllm" => AiProviderKind::LocalOpenAiCompatible,
+        "llamacpp" | "llama-cpp" | "llama.cpp" | "llama" => AiProviderKind::LlamaCpp,
+        "local" | "local-openai" | "lm-studio" | "vllm" | "lmstudio" => AiProviderKind::LocalOpenAiCompatible,
         _ => AiProviderKind::Custom,
     }
 }
@@ -232,9 +351,26 @@ pub fn provider_label(kind: AiProviderKind) -> &'static str {
         AiProviderKind::Anthropic => "Anthropic",
         AiProviderKind::Gemini => "Gemini",
         AiProviderKind::OpenRouter => "OpenRouter",
+        AiProviderKind::Groq => "Groq",
+        AiProviderKind::LlamaCpp => "llama.cpp",
         AiProviderKind::LocalOpenAiCompatible => "Local OpenAI-Compatible",
         AiProviderKind::Ollama => "Ollama",
         AiProviderKind::Custom => "Custom",
+    }
+}
+
+// ── Provider Definitions ─────────────────────────────────────────────
+
+fn gemini_provider() -> AiProviderConfig {
+    AiProviderConfig {
+        kind: AiProviderKind::Gemini,
+        model: "gemini-2.0-flash".to_string(),
+        api_base: "https://generativelanguage.googleapis.com".to_string(),
+        api_key_env: Some("GEMINI_API_KEY".to_string()),
+        api_key: None,
+        organization: None,
+        project: None,
+        local: false,
     }
 }
 
@@ -251,23 +387,10 @@ fn openai_provider() -> AiProviderConfig {
     }
 }
 
-fn openrouter_provider() -> AiProviderConfig {
-    AiProviderConfig {
-        kind: AiProviderKind::OpenRouter,
-        model: "openai/gpt-4.1-mini".to_string(),
-        api_base: "https://openrouter.ai/api/v1".to_string(),
-        api_key_env: Some("OPENROUTER_API_KEY".to_string()),
-        api_key: None,
-        organization: None,
-        project: None,
-        local: false,
-    }
-}
-
 fn anthropic_provider() -> AiProviderConfig {
     AiProviderConfig {
         kind: AiProviderKind::Anthropic,
-        model: "claude-3-5-sonnet-latest".to_string(),
+        model: "claude-sonnet-4-20250514".to_string(),
         api_base: "https://api.anthropic.com".to_string(),
         api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
         api_key: None,
@@ -277,12 +400,25 @@ fn anthropic_provider() -> AiProviderConfig {
     }
 }
 
-fn gemini_provider() -> AiProviderConfig {
+fn openrouter_provider() -> AiProviderConfig {
     AiProviderConfig {
-        kind: AiProviderKind::Gemini,
-        model: "gemini-2.0-flash".to_string(),
-        api_base: "https://generativelanguage.googleapis.com".to_string(),
-        api_key_env: Some("GEMINI_API_KEY".to_string()),
+        kind: AiProviderKind::OpenRouter,
+        model: "google/gemini-2.0-flash-exp:free".to_string(),
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+        api_key: None,
+        organization: None,
+        project: None,
+        local: false,
+    }
+}
+
+fn groq_provider() -> AiProviderConfig {
+    AiProviderConfig {
+        kind: AiProviderKind::Groq,
+        model: "llama-3.3-70b-versatile".to_string(),
+        api_base: "https://api.groq.com/openai/v1".to_string(),
+        api_key_env: Some("GROQ_API_KEY".to_string()),
         api_key: None,
         organization: None,
         project: None,
@@ -302,6 +438,34 @@ fn ollama_provider() -> AiProviderConfig {
         local: true,
     }
 }
+
+fn llamacpp_provider() -> AiProviderConfig {
+    AiProviderConfig {
+        kind: AiProviderKind::LlamaCpp,
+        model: "local-model".to_string(),
+        api_base: "http://127.0.0.1:8080".to_string(),
+        api_key_env: None,
+        api_key: None,
+        organization: None,
+        project: None,
+        local: true,
+    }
+}
+
+fn local_openai_provider() -> AiProviderConfig {
+    AiProviderConfig {
+        kind: AiProviderKind::LocalOpenAiCompatible,
+        model: "local-model".to_string(),
+        api_base: "http://127.0.0.1:1234/v1".to_string(),
+        api_key_env: None,
+        api_key: None,
+        organization: None,
+        project: None,
+        local: true,
+    }
+}
+
+// ── Strategy Selection ───────────────────────────────────────────────
 
 fn select_strategy(pipeline: &PipelineContext) -> DeploymentStrategy {
     if pipeline

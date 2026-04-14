@@ -14,15 +14,19 @@ use axum::{
 };
 use clap::{Parser, Subcommand};
 use optidock_agent::{
-    build_architecture_prompt, build_chat_prompt, default_ai_runtime_config,
-    default_pipeline_context, moderate_pipeline, provider_summary, run_analysis,
+    all_providers, build_architecture_prompt, build_chat_prompt, default_ai_runtime_config,
+    default_pipeline_context, moderate_pipeline, provider_label, provider_summary, run_analysis,
+    run_optimize, run_security_scan, save_provider_config,
 };
 use optidock_core::{
-    AiRuntimeConfig, DeploymentStrategy, DockerfileAnalysis, NewChatContextRecord,
-    PipelineModerationReport, PipelineStatus, Severity,
+    AiProviderConfig, AiProviderKind, AiRuntimeConfig, BenchmarkResult, DeploymentRecord,
+    DeploymentStrategy, DockerfileAnalysis, MonitorSnapshot, NewChatContextRecord,
+    OptimizedDockerfile, PipelineModerationReport, PipelineStatus, SecurityAudit, SecurityCategory,
+    SecurityGrade, Severity,
 };
 use optidock_runner::{
-    command_check, evaluate_command_policy, run_shell_command, CommandExecution, CommandRisk,
+    command_check, docker_benchmark, docker_deploy, docker_monitor, docker_rollback,
+    evaluate_command_policy, run_shell_command, CommandExecution, CommandRisk,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -76,6 +80,56 @@ enum Commands {
     Serve {
         #[arg(long, default_value = "8080")]
         port: u16,
+    },
+    /// Generate an optimized Dockerfile from the current one
+    Optimize {
+        #[arg(default_value = ".")]
+        path: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a security audit on the Dockerfile and container configuration
+    Security {
+        #[arg(default_value = ".")]
+        path: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Build baseline and optimized images, compare metrics
+    Benchmark {
+        #[arg(default_value = ".")]
+        path: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deploy a container locally with resource limits and monitoring
+    Deploy {
+        image: String,
+        #[arg(long, default_value = "optidock-app")]
+        name: String,
+        #[arg(long, default_value = "8080")]
+        port: u16,
+    },
+    /// Show running containers, images, and Docker system status
+    Monitor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop and remove a deployed container
+    Rollback {
+        name: String,
+    },
+    /// Switch the active LLM provider
+    Config {
+        /// Provider name: gemini, openai, anthropic, openrouter, groq, ollama, llamacpp, local
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model override (e.g. gpt-4o, claude-sonnet-4-20250514)
+        #[arg(long)]
+        model: Option<String>,
+        /// List all supported providers
+        #[arg(long)]
+        list: bool,
     },
 }
 
@@ -132,6 +186,64 @@ async fn main() -> Result<()> {
         }
         Commands::Serve { port } => {
             run_http_server(port).await?;
+        }
+        Commands::Optimize { path, json } => {
+            let result = run_optimize(&path)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                render_optimize_report(&result);
+            }
+        }
+        Commands::Security { path, json } => {
+            let audit = run_security_scan(&path)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&audit)?);
+            } else {
+                render_security_report(&audit);
+            }
+        }
+        Commands::Benchmark { path, json } => {
+            let result = docker_benchmark(&path)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                render_benchmark_report(&result);
+            }
+        }
+        Commands::Deploy { image, name, port } => {
+            let record = docker_deploy(&image, &name, port)?;
+            render_deploy_report(&record);
+        }
+        Commands::Monitor { json } => {
+            let snapshot = docker_monitor()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            } else {
+                render_monitor_report(&snapshot);
+            }
+        }
+        Commands::Rollback { name } => {
+            let msg = docker_rollback(&name)?;
+            print_section("Rollback");
+            println!("  {} {}", paint_ok(" DONE "), msg);
+        }
+        Commands::Config { provider, model, list } => {
+            if list {
+                render_provider_list();
+            } else if let Some(ref p) = provider {
+                save_provider_config(p, model.as_deref())?;
+                let config = default_ai_runtime_config();
+                print_section("Provider Updated");
+                println!(
+                    "  {} Active: {} ({})",
+                    paint_ok(" SET "),
+                    provider_label(config.active_provider.kind),
+                    config.active_provider.model
+                );
+            } else {
+                render_provider_report();
+            }
         }
     }
 
@@ -715,38 +827,6 @@ async fn render_doctor_report() {
     }
 }
 
-fn render_provider_report() {
-    let config = default_ai_runtime_config();
-    let active_summary = provider_summary(&config);
-
-    print_header(
-        "OptiDock AI",
-        "Provider runtime",
-        &[
-            ("Active", active_summary.as_str()),
-            ("Timeout", "90 seconds"),
-        ],
-    );
-
-    print_section("Compatible Providers");
-    println!("  {} OpenAI", paint_accent("•"));
-    println!("  {} Anthropic / Claude", paint_accent("•"));
-    println!("  {} Gemini", paint_accent("•"));
-    println!("  {} OpenRouter", paint_accent("•"));
-    println!("  {} Ollama", paint_accent("•"));
-    println!("  {} Local OpenAI-compatible servers", paint_accent("•"));
-
-    print_section("Expected Environment Keys");
-    println!("  {} `OPENAI_API_KEY`", paint_muted("OpenAI"));
-    println!("  {} `ANTHROPIC_API_KEY`", paint_muted("Anthropic"));
-    println!("  {} `GEMINI_API_KEY`", paint_muted("Gemini"));
-    println!("  {} `OPENROUTER_API_KEY`", paint_muted("OpenRouter"));
-    println!(
-        "  {} none required by default",
-        paint_muted("Ollama / local")
-    );
-}
-
 fn render_command_check(check: &optidock_runner::CommandCheck) {
     if check.available {
         println!(
@@ -848,6 +928,330 @@ fn render_pipeline_report(report: &PipelineModerationReport) {
     } else {
         print_section("Recommendations");
         println!("  {} No moderation issues detected.", paint_ok("PASS"));
+    }
+}
+
+// ── Provider Reports ─────────────────────────────────────────────────
+
+fn render_provider_report() {
+    let config = default_ai_runtime_config();
+    print_header(
+        "OptiDock AI",
+        "LLM provider configuration",
+        &[
+            ("Active", provider_label(config.active_provider.kind)),
+            ("Model", &config.active_provider.model),
+        ],
+    );
+
+    print_section("Active Provider");
+    render_single_provider(&config.active_provider, true);
+
+    print_section("Fallback Chain");
+    for provider in &config.fallback_providers {
+        render_single_provider(provider, false);
+    }
+
+    print_section("Switch Provider");
+    println!("  {} `optidock config --provider gemini`", paint_accent("•"));
+    println!("  {} `optidock config --provider openai --model gpt-4o`", paint_accent("•"));
+    println!("  {} `optidock config --list` to see all options", paint_accent("•"));
+    println!("  {} Or set OPTIDOCK_PROVIDER=anthropic in your env", paint_accent("•"));
+}
+
+fn render_provider_list() {
+    let providers = all_providers();
+
+    print_header(
+        "OptiDock AI",
+        "Supported LLM providers",
+        &[
+            ("Total", &providers.len().to_string()),
+            ("Default", "Gemini 2.0 Flash (free)"),
+        ],
+    );
+
+    let config = default_ai_runtime_config();
+
+    print_section("All Providers");
+    for p in &providers {
+        let active_marker = if p.kind == config.active_provider.kind {
+            paint_ok(" ACTIVE ")
+        } else {
+            "        ".to_string()
+        };
+
+        let tier = match p.kind {
+            AiProviderKind::Gemini => paint_ok(" FREE "),
+            AiProviderKind::Groq => paint_ok(" FREE "),
+            AiProviderKind::Ollama | AiProviderKind::LlamaCpp | AiProviderKind::LocalOpenAiCompatible => paint_accent(" LOCAL "),
+            _ => paint_warn(" PAID "),
+        };
+
+        println!(
+            "  {} {} {} ({})",
+            active_marker,
+            tier,
+            paint_bold(provider_label(p.kind)),
+            p.model
+        );
+        println!(
+            "          {} {}",
+            paint_muted("API"),
+            p.api_base
+        );
+        if let Some(ref key_env) = p.api_key_env {
+            println!("          {} {}", paint_muted("Key"), key_env);
+        } else {
+            println!("          {} No API key needed", paint_muted("Key"));
+        }
+        println!();
+    }
+
+    print_section("Usage");
+    println!("  {} Set provider: `optidock config --provider gemini`", paint_accent("•"));
+    println!("  {} Override model: `optidock config --provider openai --model gpt-4o`", paint_accent("•"));
+    println!("  {} Env override: `OPTIDOCK_PROVIDER=anthropic optidock live .`", paint_accent("•"));
+}
+
+fn render_single_provider(p: &AiProviderConfig, active: bool) {
+    let badge = if active { paint_ok(" ● ") } else { "   ".to_string() };
+    println!(
+        "  {} {} — {} ({})",
+        badge,
+        paint_bold(provider_label(p.kind)),
+        p.model,
+        if p.local { "local" } else { "cloud" }
+    );
+    println!("  {}   API: {}", "", p.api_base);
+    if let Some(ref key) = p.api_key_env {
+        let has_key = std::env::var(key).is_ok();
+        let status = if has_key { paint_ok(" SET ") } else { paint_warn(" MISSING ") };
+        println!("  {}   Key: {} {}", "", key, status);
+    }
+}
+
+// ── Security Report ──────────────────────────────────────────────────
+
+fn render_security_report(audit: &SecurityAudit) {
+    let score_str = audit.score.to_string();
+    let grade_str = security_grade_label(audit.grade);
+    let count = audit.findings.len().to_string();
+
+    print_header(
+        "OptiDock AI",
+        "Security audit",
+        &[
+            ("Project", &audit.context.path),
+            ("Score", &format!("{}/100", score_str)),
+            ("Grade", grade_str),
+            ("Findings", &count),
+        ],
+    );
+
+    print_section("Summary");
+    println!(
+        "  {} {}",
+        security_grade_badge(audit.grade),
+        audit.summary
+    );
+
+    if audit.findings.is_empty() {
+        print_section("Results");
+        println!("  {} No security issues detected.", paint_ok("PASS"));
+        return;
+    }
+
+    print_section("Findings");
+    for (i, f) in audit.findings.iter().enumerate() {
+        if i > 0 { println!(); }
+        println!(
+            "  {} [{}] {}",
+            severity_badge(f.severity),
+            security_cat_label(f.category),
+            paint_bold(&f.title)
+        );
+        println!("  {} {}", paint_muted("Detail"), f.detail);
+        println!("  {} {}", paint_muted("Fix"), f.remediation);
+    }
+}
+
+fn security_grade_badge(grade: SecurityGrade) -> String {
+    match grade {
+        SecurityGrade::A => paint_ok(" A "),
+        SecurityGrade::B => paint_ok(" B "),
+        SecurityGrade::C => paint_warn(" C "),
+        SecurityGrade::D => paint_warn(" D "),
+        SecurityGrade::F => paint_critical(" F "),
+    }
+}
+
+fn security_grade_label(grade: SecurityGrade) -> &'static str {
+    match grade {
+        SecurityGrade::A => "A — Excellent",
+        SecurityGrade::B => "B — Good",
+        SecurityGrade::C => "C — Fair",
+        SecurityGrade::D => "D — Poor",
+        SecurityGrade::F => "F — Critical",
+    }
+}
+
+fn security_cat_label(cat: SecurityCategory) -> &'static str {
+    match cat {
+        SecurityCategory::Secrets => "SECRETS",
+        SecurityCategory::Privileges => "PRIVESC",
+        SecurityCategory::NetworkExposure => "NETWORK",
+        SecurityCategory::BaseImage => "IMAGE",
+        SecurityCategory::SupplyChain => "SUPPLY",
+        SecurityCategory::RuntimeSafety => "RUNTIME",
+        SecurityCategory::ResourceLimits => "RESOURCES",
+        SecurityCategory::Misconfiguration => "CONFIG",
+    }
+}
+
+// ── Optimize Report ──────────────────────────────────────────────────
+
+fn render_optimize_report(result: &OptimizedDockerfile) {
+    print_header(
+        "OptiDock AI",
+        "Dockerfile optimization",
+        &[
+            ("Original", &result.original_path),
+            ("Output", &result.output_path),
+        ],
+    );
+
+    let change_count = result.changes_applied.len().to_string();
+    print_section(&format!("Changes Applied ({})", change_count));
+    for change in &result.changes_applied {
+        println!("  {} {}", paint_accent("•"), change);
+    }
+
+    print_section("Next Steps");
+    println!("  {} Review the optimized Dockerfile at `{}`", paint_accent("•"), result.output_path);
+    println!("  {} Run `optidock benchmark` to compare image sizes", paint_accent("•"));
+    println!("  {} Run `optidock security` to verify security posture", paint_accent("•"));
+}
+
+// ── Benchmark Report ─────────────────────────────────────────────────
+
+fn render_benchmark_report(result: &BenchmarkResult) {
+    print_header(
+        "OptiDock AI",
+        "Docker benchmark",
+        &[
+            ("Baseline", &result.baseline.tag),
+            ("Build success", if result.baseline.build_success { "yes" } else { "no" }),
+        ],
+    );
+
+    print_section("Baseline Metrics");
+    render_image_metrics(&result.baseline);
+
+    if let Some(ref opt) = result.optimized {
+        print_section("Optimized Metrics");
+        render_image_metrics(opt);
+    }
+
+    print_section("Summary");
+    println!("  {} {}", paint_accent("•"), result.improvement_summary);
+}
+
+fn render_image_metrics(m: &optidock_core::ImageMetrics) {
+    let size_mb = m.size_bytes as f64 / 1_048_576.0;
+    println!("  {} {}", paint_muted("Tag"), m.tag);
+    println!("  {} {:.1} MB ({} bytes)", paint_muted("Size"), size_mb, m.size_bytes);
+    println!("  {} {}", paint_muted("Layers"), m.layer_count);
+    println!("  {} {} ms", paint_muted("Build time"), m.build_time_ms);
+    println!(
+        "  {} {}",
+        paint_muted("Status"),
+        if m.build_success { paint_ok(" SUCCESS ") } else { paint_critical(" FAILED ") }
+    );
+}
+
+// ── Deploy Report ────────────────────────────────────────────────────
+
+fn render_deploy_report(record: &DeploymentRecord) {
+    print_header(
+        "OptiDock AI",
+        "Container deployed",
+        &[
+            ("Container", &record.container_id),
+            ("Image", &record.image),
+            ("Name", &record.name),
+            ("Ports", &record.port_mapping),
+        ],
+    );
+
+    print_section("Status");
+    println!("  {} Container is running.", paint_ok(" LIVE "));
+    println!("  {} Started at {}", paint_muted("Time"), record.started_at);
+    println!("  {} Resource limits: 512MB RAM, 1 CPU", paint_muted("Limits"));
+
+    print_section("Management");
+    println!("  {} `optidock monitor` to check status", paint_accent("•"));
+    println!("  {} `optidock rollback {}` to stop and remove", paint_accent("•"), record.name);
+}
+
+// ── Monitor Report ───────────────────────────────────────────────────
+
+fn render_monitor_report(snapshot: &MonitorSnapshot) {
+    let container_count = snapshot.containers.len().to_string();
+    let image_count = snapshot.images.len().to_string();
+
+    print_header(
+        "OptiDock AI",
+        "Container monitor",
+        &[
+            ("Containers", &container_count),
+            ("Images", &image_count),
+        ],
+    );
+
+    print_section("Running Containers");
+    if snapshot.containers.is_empty() {
+        println!("  {} No containers found.", paint_muted("empty"));
+    } else {
+        for c in &snapshot.containers {
+            let status_badge = if c.status.contains("Up") {
+                paint_ok(" UP ")
+            } else {
+                paint_warn(" DOWN ")
+            };
+            println!(
+                "  {} {} {} ({})",
+                status_badge,
+                paint_bold(&c.name),
+                paint_muted(&c.image),
+                c.ports
+            );
+        }
+    }
+
+    print_section("Local Images");
+    if snapshot.images.is_empty() {
+        println!("  {} No images found.", paint_muted("empty"));
+    } else {
+        for img in snapshot.images.iter().take(10) {
+            println!(
+                "  {} {}:{} ({})",
+                paint_accent("•"),
+                img.repository,
+                img.tag,
+                img.size
+            );
+        }
+        if snapshot.images.len() > 10 {
+            println!("  {} ... and {} more", paint_muted(""), snapshot.images.len() - 10);
+        }
+    }
+
+    if let Some(ref disk) = snapshot.system_disk_usage {
+        print_section("Disk Usage");
+        for line in disk.lines() {
+            println!("  {} {}", paint_accent("•"), line);
+        }
     }
 }
 

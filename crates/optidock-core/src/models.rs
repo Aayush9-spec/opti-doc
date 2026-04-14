@@ -124,71 +124,143 @@ pub struct NewChatContextRecord {
     pub response_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum ServiceRole {
-    Api,
-    Worker,
-    Frontend,
-    Database,
-    Cache,
-    Gateway,
-    Unknown,
-}
+// ── Enums ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum DeploymentTarget {
-    LocalDocker,
-    RemoteDocker,
-    EdgeNode,
-    Unknown,
-}
+pub enum ServiceRole { Api, Worker, Frontend, Database, Cache, Gateway, Unknown }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum TrafficProfile {
-    Low,
-    Medium,
-    High,
-    Burst,
-}
+pub enum DeploymentTarget { LocalDocker, RemoteDocker, EdgeNode, Unknown }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum CiProvider {
-    GitHubActions,
-    GitLabCi,
-    Jenkins,
-    CircleCi,
-    Unknown,
-}
+pub enum TrafficProfile { Low, Medium, High, Burst }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum PipelineStatus {
-    Healthy,
-    NeedsAttention,
-    Critical,
-}
+pub enum CiProvider { GitHubActions, GitLabCi, Jenkins, CircleCi, Unknown }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum DeploymentStrategy {
-    Rolling,
-    BlueGreen,
-    Canary,
-    Recreate,
-}
+pub enum PipelineStatus { Healthy, NeedsAttention, Critical }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum DeploymentStrategy { Rolling, BlueGreen, Canary, Recreate }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AiProviderKind {
     OpenAi,
     Anthropic,
     Gemini,
     OpenRouter,
+    Groq,
+    LlamaCpp,
     LocalOpenAiCompatible,
     Ollama,
     Custom,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum Severity {
-    Info,
-    Warning,
-    Critical,
+pub enum Severity { Info, Warning, Critical }
+
+// ── Security Audit Models ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityAudit {
+    pub context: ProjectContext,
+    pub findings: Vec<SecurityFinding>,
+    pub score: u8,
+    pub grade: SecurityGrade,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityFinding {
+    pub id: String,
+    pub category: SecurityCategory,
+    pub severity: Severity,
+    pub title: String,
+    pub detail: String,
+    pub remediation: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum SecurityCategory {
+    Secrets,
+    Privileges,
+    NetworkExposure,
+    BaseImage,
+    SupplyChain,
+    RuntimeSafety,
+    ResourceLimits,
+    Misconfiguration,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum SecurityGrade { A, B, C, D, F }
+
+// ── Benchmark Models ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkResult {
+    pub baseline: ImageMetrics,
+    pub optimized: Option<ImageMetrics>,
+    pub improvement_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageMetrics {
+    pub tag: String,
+    pub size_bytes: u64,
+    pub layer_count: u32,
+    pub build_time_ms: u64,
+    pub build_success: bool,
+}
+
+// ── Deployment Models ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeploymentRecord {
+    pub container_id: String,
+    pub image: String,
+    pub name: String,
+    pub port_mapping: String,
+    pub status: String,
+    pub started_at: String,
+}
+
+// ── Monitor Models ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerStatus {
+    pub container_id: String,
+    pub name: String,
+    pub image: String,
+    pub status: String,
+    pub ports: String,
+    pub created: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorSnapshot {
+    pub containers: Vec<ContainerStatus>,
+    pub images: Vec<ImageInfo>,
+    pub system_disk_usage: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageInfo {
+    pub repository: String,
+    pub tag: String,
+    pub image_id: String,
+    pub size: String,
+    pub created: String,
+}
+
+// ── Optimization Output ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizedDockerfile {
+    pub original_path: String,
+    pub output_path: String,
+    pub changes_applied: Vec<String>,
+    pub original_content: String,
+    pub optimized_content: String,
 }

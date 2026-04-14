@@ -1003,6 +1003,7 @@ dependencies = [
  "anyhow",
  "optidock-analyzer",
  "optidock-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -1048,6 +1049,7 @@ name = "optidock-runner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "optidock-core",
 ]
 
 [[package]]
