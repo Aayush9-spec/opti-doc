@@ -27,3 +27,4 @@ tower-http.workspace = true
 optidock-agent = { path = "../optidock-agent" }
 optidock-core = { path = "../optidock-core" }
 optidock-runner = { path = "../optidock-runner" }
+tracing-bunyan-formatter = "0.3.10"

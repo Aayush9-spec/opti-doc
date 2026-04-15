@@ -137,10 +137,24 @@ enum Commands {
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .without_time()
-        .init();
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    if std::env::var("K_SERVICE").is_ok() {
+        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        let formatting_layer = tracing_bunyan_formatter::BunyanFormattingLayer::new(
+            "optidock-cli".into(),
+            std::io::stdout,
+        );
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_bunyan_formatter::JsonStorageLayer)
+            .with(formatting_layer)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .without_time()
+            .init();
+    }
 
     let cli = Cli::parse();
 
