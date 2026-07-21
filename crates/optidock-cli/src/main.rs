@@ -2,21 +2,17 @@ mod auth;
 
 use anyhow::Result;
 use auth::{
-    doctor_report as db_auth_doctor_report, login_operator, recent_chat_context,
-    signup_operator, store_chat_context,
+    doctor_report as db_auth_doctor_report, login_operator, recent_chat_context, signup_operator,
+    store_chat_context,
 };
-use axum::{
-    extract::Query,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use axum::{extract::Query, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use clap::{Parser, Subcommand};
 use optidock_agent::{
     all_providers, build_architecture_prompt, build_chat_prompt, default_ai_runtime_config,
     default_pipeline_context, moderate_pipeline, provider_label, provider_summary, run_analysis,
-    run_optimize, run_security_scan, save_provider_config,
+    run_optimize, run_security_scan, save_provider_config, AgentHealthStatus, DockerCliRuntime,
+    MasterAgent, MasterAgentReport, RecoveryAgentConfig, RecoveryAttemptStatus, RecoveryStatus,
+    SignalSeverity,
 };
 use optidock_core::{
     AiProviderConfig, AiProviderKind, AiRuntimeConfig, BenchmarkResult, DeploymentRecord,
@@ -114,6 +110,19 @@ enum Commands {
     Monitor {
         #[arg(long)]
         json: bool,
+    },
+    /// Run the autonomous master/local container recovery agent system
+    Agents {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        watch: bool,
+        /// Execute configured recovery commands instead of only planning them
+        #[arg(long)]
+        apply: bool,
+        /// Permit container restarts after lower-risk recovery actions fail
+        #[arg(long)]
+        restart_containers: bool,
     },
     /// Stop and remove a deployed container
     Rollback {
@@ -237,12 +246,24 @@ async fn main() -> Result<()> {
                 render_monitor_report(&snapshot);
             }
         }
+        Commands::Agents {
+            json,
+            watch,
+            apply,
+            restart_containers,
+        } => {
+            run_recovery_agents(json, watch, apply, restart_containers).await?;
+        }
         Commands::Rollback { name } => {
             let msg = docker_rollback(&name)?;
             print_section("Rollback");
             println!("  {} {}", paint_ok(" DONE "), msg);
         }
-        Commands::Config { provider, model, list } => {
+        Commands::Config {
+            provider,
+            model,
+            list,
+        } => {
             if list {
                 render_provider_list();
             } else if let Some(ref p) = provider {
@@ -350,10 +371,7 @@ async fn run_http_server(port: u16) -> Result<()> {
     print_header(
         "OptiDock AI",
         "HTTP serve mode",
-        &[
-            ("Port", &port.to_string()),
-            ("Mode", "Cloud Run API"),
-        ],
+        &[("Port", &port.to_string()), ("Mode", "Cloud Run API")],
     );
 
     let app = Router::new()
@@ -402,7 +420,10 @@ struct AnalyzeParams {
 async fn handle_analyze(Query(params): Query<AnalyzeParams>) -> impl IntoResponse {
     let path = params.path.unwrap_or_else(|| "./sample".to_string());
     match run_analysis(&path) {
-        Ok(analysis) => (StatusCode::OK, Json(serde_json::to_value(analysis).unwrap())),
+        Ok(analysis) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(analysis).unwrap()),
+        ),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": err.to_string() })),
@@ -428,7 +449,6 @@ async fn handle_providers() -> impl IntoResponse {
         ]
     }))
 }
-
 
 fn render_live_help() {
     print_section("Available Commands");
@@ -513,7 +533,8 @@ async fn render_live_agent_response(input: &str, path: &str) -> Result<()> {
         paint_muted("Guide")
     );
     let prompt_pack = build_chat_prompt(input, Some(path));
-    let architecture_pack = build_architecture_prompt(input, Some(path), Some("live-agent-response"));
+    let architecture_pack =
+        build_architecture_prompt(input, Some(path), Some("live-agent-response"));
     println!(
         "  {} Using saved prompt preset `{}`.",
         paint_muted("Prompt"),
@@ -539,7 +560,9 @@ fn run_and_render_command(command: &str) -> Result<()> {
     println!("  {} {}", paint_muted("Command"), command);
 
     let policy = evaluate_command_policy(command);
-    if matches!(policy.risk, CommandRisk::NeedsApproval) && !confirm_unsafe_command(command, policy.reason.as_deref())? {
+    if matches!(policy.risk, CommandRisk::NeedsApproval)
+        && !confirm_unsafe_command(command, policy.reason.as_deref())?
+    {
         println!(
             "  {} Command blocked until the operator grants permission.",
             paint_warn(" BLOCKED ")
@@ -967,10 +990,22 @@ fn render_provider_report() {
     }
 
     print_section("Switch Provider");
-    println!("  {} `optidock config --provider gemini`", paint_accent("•"));
-    println!("  {} `optidock config --provider openai --model gpt-4o`", paint_accent("•"));
-    println!("  {} `optidock config --list` to see all options", paint_accent("•"));
-    println!("  {} Or set OPTIDOCK_PROVIDER=anthropic in your env", paint_accent("•"));
+    println!(
+        "  {} `optidock config --provider gemini`",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `optidock config --provider openai --model gpt-4o`",
+        paint_accent("•")
+    );
+    println!(
+        "  {} `optidock config --list` to see all options",
+        paint_accent("•")
+    );
+    println!(
+        "  {} Or set OPTIDOCK_PROVIDER=anthropic in your env",
+        paint_accent("•")
+    );
 }
 
 fn render_provider_list() {
@@ -998,7 +1033,9 @@ fn render_provider_list() {
         let tier = match p.kind {
             AiProviderKind::Gemini => paint_ok(" FREE "),
             AiProviderKind::Groq => paint_ok(" FREE "),
-            AiProviderKind::Ollama | AiProviderKind::LlamaCpp | AiProviderKind::LocalOpenAiCompatible => paint_accent(" LOCAL "),
+            AiProviderKind::Ollama
+            | AiProviderKind::LlamaCpp
+            | AiProviderKind::LocalOpenAiCompatible => paint_accent(" LOCAL "),
             _ => paint_warn(" PAID "),
         };
 
@@ -1009,11 +1046,7 @@ fn render_provider_list() {
             paint_bold(provider_label(p.kind)),
             p.model
         );
-        println!(
-            "          {} {}",
-            paint_muted("API"),
-            p.api_base
-        );
+        println!("          {} {}", paint_muted("API"), p.api_base);
         if let Some(ref key_env) = p.api_key_env {
             println!("          {} {}", paint_muted("Key"), key_env);
         } else {
@@ -1023,13 +1056,26 @@ fn render_provider_list() {
     }
 
     print_section("Usage");
-    println!("  {} Set provider: `optidock config --provider gemini`", paint_accent("•"));
-    println!("  {} Override model: `optidock config --provider openai --model gpt-4o`", paint_accent("•"));
-    println!("  {} Env override: `OPTIDOCK_PROVIDER=anthropic optidock live .`", paint_accent("•"));
+    println!(
+        "  {} Set provider: `optidock config --provider gemini`",
+        paint_accent("•")
+    );
+    println!(
+        "  {} Override model: `optidock config --provider openai --model gpt-4o`",
+        paint_accent("•")
+    );
+    println!(
+        "  {} Env override: `OPTIDOCK_PROVIDER=anthropic optidock live .`",
+        paint_accent("•")
+    );
 }
 
 fn render_single_provider(p: &AiProviderConfig, active: bool) {
-    let badge = if active { paint_ok(" ● ") } else { "   ".to_string() };
+    let badge = if active {
+        paint_ok(" ● ")
+    } else {
+        "   ".to_string()
+    };
     println!(
         "  {} {} — {} ({})",
         badge,
@@ -1040,7 +1086,11 @@ fn render_single_provider(p: &AiProviderConfig, active: bool) {
     println!("  {}   API: {}", "", p.api_base);
     if let Some(ref key) = p.api_key_env {
         let has_key = std::env::var(key).is_ok();
-        let status = if has_key { paint_ok(" SET ") } else { paint_warn(" MISSING ") };
+        let status = if has_key {
+            paint_ok(" SET ")
+        } else {
+            paint_warn(" MISSING ")
+        };
         println!("  {}   Key: {} {}", "", key, status);
     }
 }
@@ -1064,11 +1114,7 @@ fn render_security_report(audit: &SecurityAudit) {
     );
 
     print_section("Summary");
-    println!(
-        "  {} {}",
-        security_grade_badge(audit.grade),
-        audit.summary
-    );
+    println!("  {} {}", security_grade_badge(audit.grade), audit.summary);
 
     if audit.findings.is_empty() {
         print_section("Results");
@@ -1078,7 +1124,9 @@ fn render_security_report(audit: &SecurityAudit) {
 
     print_section("Findings");
     for (i, f) in audit.findings.iter().enumerate() {
-        if i > 0 { println!(); }
+        if i > 0 {
+            println!();
+        }
         println!(
             "  {} [{}] {}",
             severity_badge(f.severity),
@@ -1142,9 +1190,19 @@ fn render_optimize_report(result: &OptimizedDockerfile) {
     }
 
     print_section("Next Steps");
-    println!("  {} Review the optimized Dockerfile at `{}`", paint_accent("•"), result.output_path);
-    println!("  {} Run `optidock benchmark` to compare image sizes", paint_accent("•"));
-    println!("  {} Run `optidock security` to verify security posture", paint_accent("•"));
+    println!(
+        "  {} Review the optimized Dockerfile at `{}`",
+        paint_accent("•"),
+        result.output_path
+    );
+    println!(
+        "  {} Run `optidock benchmark` to compare image sizes",
+        paint_accent("•")
+    );
+    println!(
+        "  {} Run `optidock security` to verify security posture",
+        paint_accent("•")
+    );
 }
 
 // ── Benchmark Report ─────────────────────────────────────────────────
@@ -1155,7 +1213,14 @@ fn render_benchmark_report(result: &BenchmarkResult) {
         "Docker benchmark",
         &[
             ("Baseline", &result.baseline.tag),
-            ("Build success", if result.baseline.build_success { "yes" } else { "no" }),
+            (
+                "Build success",
+                if result.baseline.build_success {
+                    "yes"
+                } else {
+                    "no"
+                },
+            ),
         ],
     );
 
@@ -1174,13 +1239,22 @@ fn render_benchmark_report(result: &BenchmarkResult) {
 fn render_image_metrics(m: &optidock_core::ImageMetrics) {
     let size_mb = m.size_bytes as f64 / 1_048_576.0;
     println!("  {} {}", paint_muted("Tag"), m.tag);
-    println!("  {} {:.1} MB ({} bytes)", paint_muted("Size"), size_mb, m.size_bytes);
+    println!(
+        "  {} {:.1} MB ({} bytes)",
+        paint_muted("Size"),
+        size_mb,
+        m.size_bytes
+    );
     println!("  {} {}", paint_muted("Layers"), m.layer_count);
     println!("  {} {} ms", paint_muted("Build time"), m.build_time_ms);
     println!(
         "  {} {}",
         paint_muted("Status"),
-        if m.build_success { paint_ok(" SUCCESS ") } else { paint_critical(" FAILED ") }
+        if m.build_success {
+            paint_ok(" SUCCESS ")
+        } else {
+            paint_critical(" FAILED ")
+        }
     );
 }
 
@@ -1201,14 +1275,238 @@ fn render_deploy_report(record: &DeploymentRecord) {
     print_section("Status");
     println!("  {} Container is running.", paint_ok(" LIVE "));
     println!("  {} Started at {}", paint_muted("Time"), record.started_at);
-    println!("  {} Resource limits: 512MB RAM, 1 CPU", paint_muted("Limits"));
+    println!(
+        "  {} Resource limits: 512MB RAM, 1 CPU",
+        paint_muted("Limits")
+    );
 
     print_section("Management");
     println!("  {} `optidock monitor` to check status", paint_accent("•"));
-    println!("  {} `optidock rollback {}` to stop and remove", paint_accent("•"), record.name);
+    println!(
+        "  {} `optidock rollback {}` to stop and remove",
+        paint_accent("•"),
+        record.name
+    );
 }
 
 // ── Monitor Report ───────────────────────────────────────────────────
+
+async fn run_recovery_agents(
+    json: bool,
+    watch: bool,
+    apply: bool,
+    restart_containers: bool,
+) -> Result<()> {
+    let config = RecoveryAgentConfig::from_env().with_cli_permissions(apply, restart_containers);
+    let runtime = DockerCliRuntime::new();
+    let mut master = MasterAgent::new(runtime, config.clone());
+
+    loop {
+        let report = master.run_once().await?;
+
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            render_recovery_agent_report(&report, &config, watch);
+        }
+
+        if !watch {
+            break;
+        }
+
+        tokio::time::sleep(config.heartbeat_interval).await;
+    }
+
+    Ok(())
+}
+
+fn render_recovery_agent_report(
+    report: &MasterAgentReport,
+    config: &RecoveryAgentConfig,
+    watch: bool,
+) {
+    let agent_count = report.registry.agents.len().to_string();
+    let heartbeat_count = report.heartbeats.len().to_string();
+    let escalation_count = report.escalations.len().to_string();
+    let heartbeat_secs = config.heartbeat_interval.as_secs().to_string();
+    let heartbeat_label = format!("{}s", heartbeat_secs);
+
+    print_header(
+        "OptiDock Agents",
+        "Autonomous container recovery",
+        &[
+            ("Status", agent_status_label(report.status)),
+            ("Mode", if watch { "watch" } else { "one-shot" }),
+            (
+                "Apply",
+                if config.dry_run {
+                    "planned only"
+                } else {
+                    "enabled"
+                },
+            ),
+            (
+                "Container restart",
+                if config.allow_container_restart {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+            ),
+            ("Heartbeat", &heartbeat_label),
+            ("Agents", &agent_count),
+            ("Heartbeats", &heartbeat_count),
+            ("Escalations", &escalation_count),
+        ],
+    );
+
+    print_section("Local Agents");
+    if report.heartbeats.is_empty() {
+        println!(
+            "  {} No running Docker containers found.",
+            paint_muted("empty")
+        );
+    } else {
+        for heartbeat in &report.heartbeats {
+            let cpu = heartbeat
+                .cpu_percent
+                .map(|value| format!("{value:.1}%"))
+                .unwrap_or_else(|| "n/a".to_string());
+            let ram = heartbeat
+                .ram_percent
+                .map(|value| format!("{value:.1}%"))
+                .unwrap_or_else(|| "n/a".to_string());
+            let latency = heartbeat
+                .response_time_ms
+                .map(|value| format!("{value}ms"))
+                .unwrap_or_else(|| "n/a".to_string());
+
+            println!(
+                "  {} {} {}",
+                agent_status_badge(heartbeat.status),
+                paint_bold(&heartbeat.container_name),
+                paint_muted(&heartbeat.agent_id)
+            );
+            println!(
+                "      {} cpu {}  ram {}  latency {}  recovery {}",
+                paint_muted("metrics"),
+                cpu,
+                ram,
+                latency,
+                recovery_status_label(heartbeat.recovery_status)
+            );
+
+            for error in &heartbeat.current_errors {
+                println!(
+                    "      {} {:?}: {}",
+                    signal_severity_badge(error.severity),
+                    error.kind,
+                    error.message
+                );
+            }
+        }
+    }
+
+    if !report.escalations.is_empty() {
+        print_section("Escalations");
+        for escalation in &report.escalations {
+            println!(
+                "  {} {}",
+                paint_warn(" ESCALATE "),
+                paint_bold(&escalation.container_name)
+            );
+            println!(
+                "      {} {}",
+                paint_muted("Cause"),
+                escalation.root_cause.summary
+            );
+            println!(
+                "      {} {:.0}%",
+                paint_muted("Confidence"),
+                escalation.confidence_score * 100.0
+            );
+            println!(
+                "      {} {}",
+                paint_muted("Suggested"),
+                escalation.suggested_resolution
+            );
+            for attempt in &escalation.recovery_attempts {
+                println!(
+                    "      {} {:?} {}",
+                    recovery_attempt_badge(attempt.status),
+                    attempt.action,
+                    attempt.detail
+                );
+            }
+        }
+    }
+
+    if !report.audit_log.is_empty() {
+        print_section("Audit Log");
+        for entry in report.audit_log.iter().rev().take(10).rev() {
+            println!(
+                "  {} {} {}",
+                recovery_status_label(entry.status),
+                paint_bold(&entry.container),
+                entry.issue
+            );
+            println!("      {} {}", paint_muted("Root cause"), entry.root_cause);
+            println!("      {} {}", paint_muted("Recovery"), entry.recovery);
+            println!(
+                "      {} {}",
+                paint_muted("Verification"),
+                entry.verification
+            );
+        }
+    }
+}
+
+fn agent_status_badge(status: AgentHealthStatus) -> String {
+    match status {
+        AgentHealthStatus::Healthy => paint_ok(" HEALTHY "),
+        AgentHealthStatus::Degraded => paint_info(" DEGRADED "),
+        AgentHealthStatus::Unhealthy => paint_warn(" UNHEALTHY "),
+        AgentHealthStatus::Crashed => paint_critical(" CRASHED "),
+        AgentHealthStatus::Escalated => paint_critical(" ESCALATED "),
+    }
+}
+
+fn agent_status_label(status: AgentHealthStatus) -> &'static str {
+    match status {
+        AgentHealthStatus::Healthy => "healthy",
+        AgentHealthStatus::Degraded => "degraded",
+        AgentHealthStatus::Unhealthy => "unhealthy",
+        AgentHealthStatus::Crashed => "crashed",
+        AgentHealthStatus::Escalated => "escalated",
+    }
+}
+
+fn recovery_status_label(status: RecoveryStatus) -> &'static str {
+    match status {
+        RecoveryStatus::NotNeeded => "not-needed",
+        RecoveryStatus::Planned => "planned",
+        RecoveryStatus::Recovered => "recovered",
+        RecoveryStatus::Failed => "failed",
+        RecoveryStatus::Escalated => "escalated",
+    }
+}
+
+fn recovery_attempt_badge(status: RecoveryAttemptStatus) -> String {
+    match status {
+        RecoveryAttemptStatus::Planned => paint_info(" PLAN "),
+        RecoveryAttemptStatus::Skipped => paint_muted(" SKIP "),
+        RecoveryAttemptStatus::Succeeded => paint_ok(" OK "),
+        RecoveryAttemptStatus::Failed => paint_warn(" FAIL "),
+    }
+}
+
+fn signal_severity_badge(severity: SignalSeverity) -> String {
+    match severity {
+        SignalSeverity::Info => paint_info(" INFO "),
+        SignalSeverity::Warning => paint_warn(" WARN "),
+        SignalSeverity::Critical => paint_critical(" CRIT "),
+    }
+}
 
 fn render_monitor_report(snapshot: &MonitorSnapshot) {
     let container_count = snapshot.containers.len().to_string();
@@ -1217,10 +1515,7 @@ fn render_monitor_report(snapshot: &MonitorSnapshot) {
     print_header(
         "OptiDock AI",
         "Container monitor",
-        &[
-            ("Containers", &container_count),
-            ("Images", &image_count),
-        ],
+        &[("Containers", &container_count), ("Images", &image_count)],
     );
 
     print_section("Running Containers");
@@ -1257,7 +1552,11 @@ fn render_monitor_report(snapshot: &MonitorSnapshot) {
             );
         }
         if snapshot.images.len() > 10 {
-            println!("  {} ... and {} more", paint_muted(""), snapshot.images.len() - 10);
+            println!(
+                "  {} ... and {} more",
+                paint_muted(""),
+                snapshot.images.len() - 10
+            );
         }
     }
 

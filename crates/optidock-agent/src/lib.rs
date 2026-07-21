@@ -1,14 +1,28 @@
 use anyhow::Result;
-use optidock_analyzer::{analyze_project, security_audit as run_security_audit, generate_optimized_dockerfile};
+pub mod recovery;
+use optidock_analyzer::{
+    analyze_project, generate_optimized_dockerfile, security_audit as run_security_audit,
+};
 use optidock_core::{
-    AiProviderConfig, AiProviderKind, AiRuntimeConfig, CiProvider, ContainerService,
-    DeploymentPlan, DeploymentStrategy, DeploymentTarget, DockerfileAnalysis, OptimizationProposal,
-    OptimizationRequest, OptimizedDockerfile, PipelineContext, PipelineModerationReport,
-    PipelineRecommendation, PipelineStatus, ProjectContext, PromptLibrary, SecurityAudit,
-    ServiceRole, Severity, TrafficProfile, default_prompt_library,
+    default_prompt_library, AiProviderConfig, AiProviderKind, AiRuntimeConfig, CiProvider,
+    ContainerService, DeploymentPlan, DeploymentStrategy, DeploymentTarget, DockerfileAnalysis,
+    OptimizationProposal, OptimizationRequest, OptimizedDockerfile, PipelineContext,
+    PipelineModerationReport, PipelineRecommendation, PipelineStatus, ProjectContext,
+    PromptLibrary, SecurityAudit, ServiceRole, Severity, TrafficProfile,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+pub use recovery::{
+    default_health_checks, default_recovery_policy, detect_error_signals,
+    run_recovery_supervision_once, AgentHealthStatus, AgentLogEntry, AgentRegistry, BoxFuture,
+    CommandResult, ContainerIdentity, ContainerInspection, ContainerObservation, ContainerRuntime,
+    ContainerRuntimeState, DockerCliRuntime, EndpointProbe, ErrorKind, ErrorSignal,
+    EscalationReport, HealthCheck, Heartbeat, LocalAgent, LocalAgentRecord, MasterAgent,
+    MasterAgentReport, RecoveryAction, RecoveryAgentConfig, RecoveryAttempt, RecoveryAttemptStatus,
+    RecoveryPolicy, RecoveryReport, RecoveryStatus, ResourceSnapshot, RootCause, RootCauseCategory,
+    SignalSeverity,
+};
 
 pub fn run_analysis(path: &str) -> Result<DockerfileAnalysis> {
     analyze_project(path)
@@ -35,7 +49,10 @@ pub fn saved_prompt_library() -> PromptLibrary {
     default_prompt_library()
 }
 
-pub fn build_chat_prompt(user_input: &str, project_context: Option<&str>) -> optidock_core::PromptPack {
+pub fn build_chat_prompt(
+    user_input: &str,
+    project_context: Option<&str>,
+) -> optidock_core::PromptPack {
     let mut values = BTreeMap::new();
     values.insert("user_input".to_string(), user_input.to_string());
 
@@ -83,8 +100,10 @@ pub fn moderate_pipeline(pipeline: PipelineContext) -> PipelineModerationReport 
             });
         }
 
-        if matches!(service.traffic_profile, TrafficProfile::High | TrafficProfile::Burst)
-            && !matches!(service.role, ServiceRole::Gateway | ServiceRole::Api)
+        if matches!(
+            service.traffic_profile,
+            TrafficProfile::High | TrafficProfile::Burst
+        ) && !matches!(service.role, ServiceRole::Gateway | ServiceRole::Api)
         {
             recommendations.push(PipelineRecommendation {
                 id: format!("traffic-profile-review-{}", service.name),
@@ -340,7 +359,9 @@ pub fn detect_provider_from_name(name: &str) -> AiProviderKind {
         "groq" => AiProviderKind::Groq,
         "ollama" => AiProviderKind::Ollama,
         "llamacpp" | "llama-cpp" | "llama.cpp" | "llama" => AiProviderKind::LlamaCpp,
-        "local" | "local-openai" | "lm-studio" | "vllm" | "lmstudio" => AiProviderKind::LocalOpenAiCompatible,
+        "local" | "local-openai" | "lm-studio" | "vllm" | "lmstudio" => {
+            AiProviderKind::LocalOpenAiCompatible
+        }
         _ => AiProviderKind::Custom,
     }
 }
@@ -468,11 +489,12 @@ fn local_openai_provider() -> AiProviderConfig {
 // ── Strategy Selection ───────────────────────────────────────────────
 
 fn select_strategy(pipeline: &PipelineContext) -> DeploymentStrategy {
-    if pipeline
-        .services
-        .iter()
-        .any(|service| matches!(service.traffic_profile, TrafficProfile::Burst | TrafficProfile::High))
-    {
+    if pipeline.services.iter().any(|service| {
+        matches!(
+            service.traffic_profile,
+            TrafficProfile::Burst | TrafficProfile::High
+        )
+    }) {
         DeploymentStrategy::Canary
     } else if pipeline.services.len() > 1 {
         DeploymentStrategy::Rolling
@@ -481,10 +503,7 @@ fn select_strategy(pipeline: &PipelineContext) -> DeploymentStrategy {
     }
 }
 
-fn build_rollout_steps(
-    pipeline: &PipelineContext,
-    strategy: DeploymentStrategy,
-) -> Vec<String> {
+fn build_rollout_steps(pipeline: &PipelineContext, strategy: DeploymentStrategy) -> Vec<String> {
     let mut steps = vec![
         format!(
             "Validate build artifacts and container metadata for {} service(s).",
@@ -496,20 +515,29 @@ fn build_rollout_steps(
     match strategy {
         DeploymentStrategy::Canary => {
             steps.push("Ship optimized containers to a small traffic slice first.".to_string());
-            steps.push("Compare latency, startup stability, and error rate before full rollout.".to_string());
+            steps.push(
+                "Compare latency, startup stability, and error rate before full rollout."
+                    .to_string(),
+            );
         }
         DeploymentStrategy::Rolling => {
-            steps.push("Replace services incrementally to avoid full-environment interruption.".to_string());
+            steps.push(
+                "Replace services incrementally to avoid full-environment interruption."
+                    .to_string(),
+            );
         }
         DeploymentStrategy::BlueGreen => {
             steps.push("Stand up the optimized release beside the active environment.".to_string());
             steps.push("Switch traffic only after validation passes.".to_string());
         }
         DeploymentStrategy::Recreate => {
-            steps.push("Stop the old workload and replace it in one controlled action.".to_string());
+            steps
+                .push("Stop the old workload and replace it in one controlled action.".to_string());
         }
     }
 
-    steps.push("Persist deployment outcome and benchmark results for future agent decisions.".to_string());
+    steps.push(
+        "Persist deployment outcome and benchmark results for future agent decisions.".to_string(),
+    );
     steps
 }

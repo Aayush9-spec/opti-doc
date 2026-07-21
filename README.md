@@ -54,6 +54,7 @@ optidock optimize ./my-app
 optidock benchmark ./my-app
 optidock deploy ./my-app
 optidock monitor
+optidock agents
 optidock providers
 ```
 
@@ -133,6 +134,9 @@ crates/
   optidock-runner/     # build, benchmark, command execution
   optidock-agent/      # orchestration and autonomous flows
 ```
+
+Autonomous container recovery agents are documented in
+[docs/architecture/container-recovery-agents.md](docs/architecture/container-recovery-agents.md).
 
 ## MVP
 
