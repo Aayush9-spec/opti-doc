@@ -1,6 +1,8 @@
+pub mod memory;
 pub mod models;
 pub mod prompting;
 
+pub use memory::{LocalMemoryStore, MemoryEntry, MemoryKind};
 pub use models::{
     AiProviderConfig, AiProviderKind, AiRuntimeConfig, BenchmarkResult, CiProvider,
     ContainerService, ContainerStatus, ChatContextRecord, DeploymentPlan, DeploymentRecord,

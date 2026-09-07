@@ -1,4 +1,5 @@
 mod auth;
+mod launcher;
 
 use anyhow::Result;
 use auth::{
@@ -16,10 +17,11 @@ use optidock_agent::{
 };
 use optidock_core::{
     AiProviderConfig, AiProviderKind, AiRuntimeConfig, BenchmarkResult, DeploymentRecord,
-    DeploymentStrategy, DockerfileAnalysis, MonitorSnapshot, NewChatContextRecord,
-    OptimizedDockerfile, PipelineModerationReport, PipelineStatus, SecurityAudit, SecurityCategory,
-    SecurityGrade, Severity,
+    DeploymentStrategy, DockerfileAnalysis, LocalMemoryStore, MemoryKind, MonitorSnapshot,
+    NewChatContextRecord, OptimizedDockerfile, PipelineModerationReport, PipelineStatus,
+    SecurityAudit, SecurityCategory, SecurityGrade, Severity,
 };
+use launcher::run_launcher;
 use optidock_runner::{
     command_check, docker_benchmark, docker_deploy, docker_monitor, docker_rollback,
     evaluate_command_policy, run_shell_command, CommandExecution, CommandRisk,
@@ -42,7 +44,7 @@ use tracing_subscriber::EnvFilter;
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -111,6 +113,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Start the OptiDoc runtime launcher and live dashboard
+    Runtime {
+        #[arg(default_value = ".")]
+        path: String,
+    },
     /// Run the autonomous master/local container recovery agent system
     Agents {
         #[arg(long)]
@@ -166,8 +173,9 @@ async fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
+    let command = cli.command.unwrap_or(Commands::Doctor);
 
-    match cli.command {
+    match command {
         Commands::Init { path } => {
             init_project(&path)?;
         }
@@ -245,6 +253,9 @@ async fn main() -> Result<()> {
             } else {
                 render_monitor_report(&snapshot);
             }
+        }
+        Commands::Runtime { path } => {
+            run_launcher(&path).await?;
         }
         Commands::Agents {
             json,
@@ -1657,6 +1668,15 @@ fn auth_session_path() -> Result<PathBuf> {
     Ok(auth_root()?.join("session.json"))
 }
 
+fn memory_store_path() -> Result<PathBuf> {
+    Ok(auth_root()?.join("memory.sqlite"))
+}
+
+fn local_memory_store() -> Result<LocalMemoryStore> {
+    let path = memory_store_path()?;
+    LocalMemoryStore::new(path)
+}
+
 fn save_session(session: &AuthSession) -> Result<()> {
     let payload = serde_json::to_string_pretty(session)?;
     fs::write(auth_session_path()?, payload)?;
@@ -1702,8 +1722,9 @@ async fn persist_live_chat_context(input: &str, path: &str, prompt_id: &str) {
         return;
     };
 
+    let email = session.email.clone();
     let record = NewChatContextRecord {
-        email: session.email,
+        email: email.clone(),
         session_key: Some("live-mode".to_string()),
         context_label: Some(prompt_id.to_string()),
         context_payload: Some(path.to_string()),
@@ -1716,6 +1737,16 @@ async fn persist_live_chat_context(input: &str, path: &str, prompt_id: &str) {
             "  {} {}",
             paint_warn(" DB "),
             format!("Supabase chat persistence skipped: {error}")
+        );
+    }
+
+    if let Ok(store) = local_memory_store() {
+        let _ = store.import_json(
+            &email,
+            MemoryKind::Working,
+            &format!("live:{prompt_id}"),
+            input,
+            &format!("path={path}; prompt_id={prompt_id}"),
         );
     }
 }
