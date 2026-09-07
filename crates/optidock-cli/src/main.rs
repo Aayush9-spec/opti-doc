@@ -26,12 +26,14 @@ use optidock_runner::{
     command_check, docker_benchmark, docker_deploy, docker_monitor, docker_rollback,
     evaluate_command_policy, run_shell_command, CommandExecution, CommandRisk,
 };
+use optidock_brain::provider::openai::OpenAiDiagnosticProvider;
 use serde::{Deserialize, Serialize};
 use std::{
     env, fs,
     io::{self, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
@@ -130,6 +132,9 @@ enum Commands {
         /// Permit container restarts after lower-risk recovery actions fail
         #[arg(long)]
         restart_containers: bool,
+        /// Diagnose one container immediately with OptiBrain (requires AI diagnosis configuration)
+        #[arg(long)]
+        explain: Option<String>,
     },
     /// Stop and remove a deployed container
     Rollback {
@@ -262,8 +267,9 @@ async fn main() -> Result<()> {
             watch,
             apply,
             restart_containers,
+            explain,
         } => {
-            run_recovery_agents(json, watch, apply, restart_containers).await?;
+            run_recovery_agents(json, watch, apply, restart_containers, explain.as_deref()).await?;
         }
         Commands::Rollback { name } => {
             let msg = docker_rollback(&name)?;
@@ -1307,14 +1313,29 @@ async fn run_recovery_agents(
     watch: bool,
     apply: bool,
     restart_containers: bool,
+    explain: Option<&str>,
 ) -> Result<()> {
     let config = RecoveryAgentConfig::from_env().with_cli_permissions(apply, restart_containers);
     let runtime = DockerCliRuntime::new();
     let mut master = MasterAgent::new(runtime, config.clone());
+    if let Some(provider) = diagnostic_provider_from_env() {
+        master = master.with_diagnostic_provider(provider);
+        if let Some(container) = explain {
+            master = master.with_forced_diagnosis_for(container);
+        }
+    } else if explain.is_some() {
+        anyhow::bail!("--explain requires OPTIDOCK_AGENT_AI_DIAGNOSIS=true, OPTIDOCK_MODEL_PROVIDER=openai, and OPENAI_API_KEY");
+    }
 
     loop {
         let report = master.run_once().await?;
 
+        if let Some(container) = explain {
+            let matching = report.heartbeats.iter().any(|heartbeat| heartbeat.container_name == container || heartbeat.container_id == container);
+            if !matching {
+                anyhow::bail!("container '{container}' was not found");
+            }
+        }
         if json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
@@ -1329,6 +1350,22 @@ async fn run_recovery_agents(
     }
 
     Ok(())
+}
+
+fn diagnostic_provider_from_env() -> Option<Arc<dyn optidock_brain::DiagnosticProvider>> {
+    if !matches!(env::var("OPTIDOCK_AGENT_AI_DIAGNOSIS").ok()?.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on") {
+        return None;
+    }
+    let provider = env::var("OPTIDOCK_MODEL_PROVIDER").unwrap_or_else(|_| "openai".to_string());
+    if !provider.eq_ignore_ascii_case("openai") {
+        tracing::warn!(provider = %provider, "OptiBrain provider is not implemented; AI diagnosis remains disabled");
+        return None;
+    }
+    let api_key = env::var("OPENAI_API_KEY").ok()?.trim().to_string();
+    if api_key.is_empty() { return None; }
+    let api_base = env::var("OPTIDOCK_OPENAI_API_BASE").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let model = env::var("OPTIDOCK_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".to_string());
+    Some(Arc::new(OpenAiDiagnosticProvider::new(api_base, api_key, model)))
 }
 
 fn render_recovery_agent_report(

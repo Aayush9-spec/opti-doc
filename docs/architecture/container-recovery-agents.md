@@ -10,6 +10,7 @@ optidock agents --watch
 optidock agents --apply
 optidock agents --apply --restart-containers
 optidock agents --json
+OPTIDOCK_AGENT_AI_DIAGNOSIS=true OPTIDOCK_MODEL_PROVIDER=openai optidock agents --explain <container>
 ```
 
 ## Architecture
@@ -108,6 +109,21 @@ Container labels can override global commands per container:
 The recovery executor never deletes source code, databases, images, or volumes. It does not stop unrelated containers. The only Docker mutation implemented by default is `docker restart`, and it requires `--restart-containers` or `OPTIDOCK_AGENT_ALLOW_CONTAINER_RESTART=true`.
 
 All recovery activity is recorded in the report audit log.
+
+## OptiBrain advisory diagnostics
+
+OptiBrain is an opt-in, provider-agnostic reasoning layer used after escalation (or a
+low-confidence deterministic cause). It receives structured observation, signals, and
+recovery history, but it never executes commands. Its recommended action is recorded as
+a planned advisory action and the existing `--apply` and `--restart-containers` gates
+remain the only path to mutations.
+
+Set `OPTIDOCK_AGENT_AI_DIAGNOSIS=true`, `OPTIDOCK_MODEL_PROVIDER=openai`, and
+`OPENAI_API_KEY` to enable the included OpenAI-compatible provider. `OPTIDOCK_OPENAI_API_BASE`
+and `OPTIDOCK_MODEL` may override its endpoint and model. Model-proposed diagnostic commands
+are surfaced only when they start with `docker logs`, `docker inspect`, `docker stats`, or
+`docker top`; chained and mutating commands are discarded. Full request/output audit context is
+recorded as an `ai_diagnosis` log entry.
 
 ## Tests
 

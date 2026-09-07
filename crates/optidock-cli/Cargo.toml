@@ -27,6 +27,7 @@ tower-http.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
 optidock-agent = { path = "../optidock-agent" }
+optidock-brain = { path = "../optidock-brain" }
 optidock-core = { path = "../optidock-core" }
 optidock-runner = { path = "../optidock-runner" }
 tracing-bunyan-formatter = "0.3.10"

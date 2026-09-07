@@ -8,6 +8,7 @@ use std::{
     process::Stdio,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use std::sync::Arc;
 use tokio::process::Command;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -887,13 +888,15 @@ impl LocalAgent {
         health_checks: &[Box<dyn HealthCheck>],
         policy: &RecoveryPolicy,
         previous_recovery_attempts: usize,
+        diagnostic_provider: Option<&Arc<dyn optidock_brain::DiagnosticProvider>>,
+        force_diagnosis: bool,
     ) -> Result<LocalAgentTick> {
         let observation = collect_observation(runtime, config, &self.container).await?;
         let errors = inspect_observation(&observation, config, health_checks);
         let status = classify_health_status(&observation, &errors);
         let mut audit_log = Vec::new();
 
-        let recovery = if errors.is_empty() {
+        let mut recovery = if errors.is_empty() {
             RecoveryReport::not_needed()
         } else if previous_recovery_attempts >= config.max_recovery_attempts {
             let root_cause = determine_root_cause(&errors, &observation);
@@ -925,6 +928,23 @@ impl LocalAgent {
             )
             .await?
         };
+
+        if let Some(provider) = diagnostic_provider {
+            let should_diagnose = force_diagnosis
+                || recovery.status == RecoveryStatus::Escalated
+                || recovery.root_cause.as_ref().is_some_and(|cause| cause.confidence < 0.6);
+            if should_diagnose {
+                enrich_with_diagnosis(
+                    provider.as_ref(),
+                    &observation,
+                    &errors,
+                    previous_recovery_attempts,
+                    &mut recovery,
+                    &mut audit_log,
+                )
+                .await;
+            }
+        }
 
         if recovery.status != RecoveryStatus::NotNeeded {
             audit_log.push(build_audit_entry(&self.container, &errors, &recovery));
@@ -968,6 +988,9 @@ pub struct MasterAgent<R: ContainerRuntime> {
     health_checks: Vec<Box<dyn HealthCheck>>,
     policy: RecoveryPolicy,
     audit_log: Vec<AgentLogEntry>,
+    diagnostic_provider: Option<Arc<dyn optidock_brain::DiagnosticProvider>>,
+    force_diagnosis: bool,
+    diagnosis_container: Option<String>,
 }
 
 impl<R: ContainerRuntime> MasterAgent<R> {
@@ -979,6 +1002,9 @@ impl<R: ContainerRuntime> MasterAgent<R> {
             health_checks: default_health_checks(),
             policy: RecoveryPolicy::default(),
             audit_log: Vec::new(),
+            diagnostic_provider: None,
+            force_diagnosis: false,
+            diagnosis_container: None,
         }
     }
 
@@ -989,6 +1015,28 @@ impl<R: ContainerRuntime> MasterAgent<R> {
 
     pub fn with_recovery_policy(mut self, policy: RecoveryPolicy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// Adds an optional, advisory OptiBrain provider. Recovery safety gates remain unchanged.
+    pub fn with_diagnostic_provider(
+        mut self,
+        provider: Arc<dyn optidock_brain::DiagnosticProvider>,
+    ) -> Self {
+        self.diagnostic_provider = Some(provider);
+        self
+    }
+
+    /// Requests a diagnosis even when the deterministic confidence is high.
+    pub fn with_forced_diagnosis(mut self) -> Self {
+        self.force_diagnosis = true;
+        self
+    }
+
+    /// Restricts a forced diagnosis to one container id or name.
+    pub fn with_forced_diagnosis_for(mut self, container: impl Into<String>) -> Self {
+        self.force_diagnosis = true;
+        self.diagnosis_container = Some(container.into());
         self
     }
 
@@ -1039,6 +1087,11 @@ impl<R: ContainerRuntime> MasterAgent<R> {
                     &self.health_checks,
                     &self.policy,
                     previous_attempts,
+                    self.diagnostic_provider.as_ref(),
+                    self.force_diagnosis
+                        && self.diagnosis_container.as_ref().map_or(true, |target| {
+                            target == &container.id || target == &container.name
+                        }),
                 )
                 .await?;
 
@@ -1683,6 +1736,74 @@ fn build_escalation(
         suggested_resolution,
         confidence_score: root_cause.confidence,
     }
+}
+
+/// Adds a validated, advisory OptiBrain result to an existing deterministic report.
+/// Failures are audit logged and deliberately leave deterministic recovery untouched.
+async fn enrich_with_diagnosis(
+    provider: &dyn optidock_brain::DiagnosticProvider,
+    observation: &ContainerObservation,
+    errors: &[ErrorSignal],
+    previous_attempts: usize,
+    recovery: &mut RecoveryReport,
+    audit_log: &mut Vec<AgentLogEntry>,
+) {
+    let request = optidock_brain::DiagnosisRequest {
+        context: serde_json::json!({
+            "observation": observation,
+            "signals": errors,
+            "deterministic_root_cause": recovery.root_cause,
+            "prior_attempts": recovery.attempts,
+        }),
+        recovery_attempt_count: previous_attempts,
+    };
+    let result = provider.diagnose(&request).await;
+    let (outcome, applied) = match result {
+        Ok(response) => {
+            let category = serde_json::from_value::<RootCauseCategory>(Value::String(response.refined_root_cause.clone()));
+            let action = serde_json::from_value::<RecoveryAction>(Value::String(response.recommended_action.clone()));
+            let steps = response.diagnostic_steps.into_iter().filter(is_read_only_diagnostic_step).collect::<Vec<_>>();
+            let safe_action = action.unwrap_or_else(|_| {
+                tracing::warn!(action = %response.recommended_action, "OptiBrain proposed an invalid recovery action; escalating");
+                RecoveryAction::Escalate
+            });
+            let mut applied = false;
+            if let Some(escalation) = recovery.escalation.as_mut() {
+                let deterministic_confidence = escalation.confidence_score;
+                if response.confidence.is_finite() && response.confidence.clamp(0.0, 1.0) > deterministic_confidence {
+                    if let Ok(category) = category {
+                        escalation.root_cause.category = category;
+                    }
+                    escalation.suggested_resolution = response.human_explanation.clone();
+                    escalation.confidence_score = response.confidence.clamp(0.0, 1.0);
+                    applied = true;
+                }
+                if safe_action != RecoveryAction::Escalate
+                    && !escalation.recovery_attempts.iter().any(|attempt| attempt.action == safe_action)
+                {
+                    escalation.recovery_attempts.push(RecoveryAttempt { action: safe_action, status: RecoveryAttemptStatus::Planned, detail: "OptiBrain advisory action; not executed and remains subject to recovery safety gates".to_string(), duration_ms: 0 });
+                }
+                if !steps.is_empty() {
+                    escalation.suggested_resolution.push_str(&format!("\nRead-only diagnostic steps: {}", steps.join("; ")));
+                }
+            }
+            (format!("input={} output={}", request.context, serde_json::json!({"refined_root_cause": response.refined_root_cause, "confidence": response.confidence, "recommended_action": response.recommended_action, "human_explanation": response.human_explanation, "diagnostic_steps": steps})), applied)
+        }
+        Err(error) => (format!("input={} provider_error={error}", request.context), false),
+    };
+    audit_log.push(AgentLogEntry {
+        level: "ai_diagnosis".to_string(), container: observation.container.name.clone(),
+        issue: "OptiBrain advisory diagnosis".to_string(),
+        root_cause: recovery.root_cause.as_ref().map(|cause| cause.summary.clone()).unwrap_or_else(|| "not determined".to_string()),
+        recovery: outcome, verification: format!("AI recommendation applied to escalation report: {applied}; no action was executed"),
+        duration_ms: 0, status: recovery.status, timestamp: now_timestamp(),
+    });
+}
+
+fn is_read_only_diagnostic_step(step: &String) -> bool {
+    let normalized = step.trim().to_ascii_lowercase();
+    ["docker logs", "docker inspect", "docker stats", "docker top"].iter().any(|prefix| normalized.starts_with(prefix))
+        && !["&&", "||", ";", "|", "`", "$(`"].iter().any(|token| normalized.contains(token))
 }
 
 fn build_audit_entry(

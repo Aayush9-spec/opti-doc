@@ -5,6 +5,7 @@ members = [
     "crates/optidock-analyzer",
     "crates/optidock-runner",
     "crates/optidock-agent",
+    "crates/optidock-brain",
 ]
 resolver = "2"
 
@@ -32,3 +33,4 @@ tower-http = { version = "0.6", features = ["cors"] }
 ratatui = "0.29"
 crossterm = "0.29"
 bollard = "0.17"
+async-trait = "0.1"
