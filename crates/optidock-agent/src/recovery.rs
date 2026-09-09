@@ -1789,7 +1789,14 @@ async fn enrich_with_diagnosis(
             }
             (format!("input={} output={}", request.context, serde_json::json!({"refined_root_cause": response.refined_root_cause, "confidence": response.confidence, "recommended_action": response.recommended_action, "human_explanation": response.human_explanation, "diagnostic_steps": steps})), applied)
         }
-        Err(error) => (format!("input={} provider_error={error}", request.context), false),
+        Err(error) => {
+            if let Some(escalation) = recovery.escalation.as_mut() {
+                escalation.suggested_resolution.push_str(&format!(
+                    "\nOptiBrain returned an invalid diagnosis; review raw provider output: {error}"
+                ));
+            }
+            (format!("input={} provider_error={error}", request.context), false)
+        }
     };
     audit_log.push(AgentLogEntry {
         level: "ai_diagnosis".to_string(), container: observation.container.name.clone(),
@@ -2251,6 +2258,14 @@ mod tests {
     fn infers_endpoint_from_published_port() {
         let endpoint = infer_endpoint_url("0.0.0.0:8080->8080/tcp", "/health");
         assert_eq!(endpoint.as_deref(), Some("http://127.0.0.1:8080/health"));
+    }
+
+    #[test]
+    fn diagnostic_steps_only_allow_read_only_docker_commands() {
+        assert!(is_read_only_diagnostic_step(&"docker inspect api".to_string()));
+        assert!(is_read_only_diagnostic_step(&"docker logs --tail 100 api".to_string()));
+        assert!(!is_read_only_diagnostic_step(&"docker rm -f api".to_string()));
+        assert!(!is_read_only_diagnostic_step(&"docker inspect api && docker rm api".to_string()));
     }
 
     #[tokio::test]
