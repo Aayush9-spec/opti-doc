@@ -1,5 +1,6 @@
 mod auth;
 mod launcher;
+mod ui;
 
 use anyhow::Result;
 use auth::{
@@ -328,7 +329,23 @@ async fn run_live_session(path: &str) -> Result<()> {
 
     let stdin = io::stdin();
     loop {
-        print!("{}", paint_prompt("optidock>"));
+        // Rich, context-aware statement prompt — workspace, git state, provider,
+        // and time are assembled through the optidock-tui prompt engine.
+        let ws_path = Path::new(path);
+        let (branch, dirty, ahead, behind) = optidock_tui::prompt::git_info_for_path(ws_path);
+        let ctx = optidock_tui::PromptContext {
+            workspace: ws_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "optidock".into()),
+            provider: Some("openai".to_string()),
+            model: Some(default_ai_runtime_config().active_provider.model.clone()),
+            git_branch: branch,
+            git_dirty: dirty,
+            git_ahead: ahead,
+            git_behind: behind,
+            time_label: optidock_tui::prompt::short_time_label(),
+            ..Default::default()
+        };
+        let prompt = optidock_tui::RichPrompt::from_context(ctx, ui::theme().clone());
+        print!("{}", prompt.render());
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -1618,14 +1635,14 @@ fn render_monitor_report(snapshot: &MonitorSnapshot) {
 
 fn print_header(title: &str, subtitle: &str, fields: &[(&str, &str)]) {
     let width = 78;
-    let banner = ascii_banner();
+    let banner = ui::banner();
 
     println!("{}", paint_panel_top(width));
     for line in banner {
         println!(
             "{} {}",
             paint_panel_side(),
-            pad_line(&paint_brand(line), width - 4)
+            pad_line(&paint_brand(&line), width - 4)
         );
     }
     println!("{}", paint_panel_divider(width));
@@ -1650,19 +1667,10 @@ fn print_header(title: &str, subtitle: &str, fields: &[(&str, &str)]) {
     println!("{}", paint_panel_bottom(width));
 }
 
-fn ascii_banner() -> [&'static str; 5] {
-    [
-        "  ____        __  _ ____             _    ",
-        " / __ \\____  / /_(_) __ \\____   _____| | __",
-        "/ / / / __ \\/ __/ / / / / __ \\ / ___/ |/_/",
-        "/ /_/ / /_/ / /_/ / /_/ / /_/ // /__/   <  ",
-        "\\____/ .___/\\__/_/_____/\\____/ \\___/_/|_| ",
-    ]
-}
-
 fn print_section(title: &str) {
-    println!();
-    println!("{} {}", paint_accent("●"), paint_bold(title));
+    // Well-defined statement prompt — consistent preamble before each output
+    // section, rendered through the RichPrompt engine.
+    println!("\n{}", ui::statement_header(title));
 }
 
 fn severity_badge(severity: Severity) -> String {
@@ -1832,69 +1840,8 @@ fn strip_ansi(input: &str) -> String {
     result
 }
 
-fn paint_brand(value: &str) -> String {
-    format!("\x1b[1;96m{value}\x1b[0m")
-}
-
-fn paint_bold(value: &str) -> String {
-    format!("\x1b[1m{value}\x1b[0m")
-}
-
-fn paint_muted(value: &str) -> String {
-    format!("\x1b[2;37m{value}\x1b[0m")
-}
-
-fn paint_accent(value: &str) -> String {
-    format!("\x1b[1;94m{value}\x1b[0m")
-}
-
-fn paint_ok(value: &str) -> String {
-    format!("\x1b[1;30;102m{value}\x1b[0m")
-}
-
-fn paint_info(value: &str) -> String {
-    format!("\x1b[1;30;106m{value}\x1b[0m")
-}
-
-fn paint_warn(value: &str) -> String {
-    format!("\x1b[1;30;103m{value}\x1b[0m")
-}
-
-fn paint_critical(value: &str) -> String {
-    format!("\x1b[1;97;101m{value}\x1b[0m")
-}
-
-fn paint_panel_top(width: usize) -> String {
-    format!(
-        "{}{}{}",
-        paint_accent("╭"),
-        paint_accent(&"─".repeat(width.saturating_sub(2))),
-        paint_accent("╮")
-    )
-}
-
-fn paint_panel_divider(width: usize) -> String {
-    format!(
-        "{}{}{}",
-        paint_accent("├"),
-        paint_accent(&"─".repeat(width.saturating_sub(2))),
-        paint_accent("┤")
-    )
-}
-
-fn paint_panel_bottom(width: usize) -> String {
-    format!(
-        "{}{}{}",
-        paint_accent("╰"),
-        paint_accent(&"─".repeat(width.saturating_sub(2))),
-        paint_accent("╯")
-    )
-}
-
-fn paint_panel_side() -> String {
-    paint_accent("│")
-}
-
-fn paint_prompt(value: &str) -> String {
-    format!("\x1b[1;97;100m {value} \x1b[0m ")
-}
+use ui::{
+    paint_accent, paint_bold, paint_brand, paint_critical, paint_info, paint_muted, paint_ok,
+    paint_panel_bottom, paint_panel_divider, paint_panel_side, paint_panel_top, paint_prompt,
+    paint_warn,
+};

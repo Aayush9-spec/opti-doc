@@ -6,6 +6,7 @@ members = [
     "crates/optidock-runner",
     "crates/optidock-agent",
     "crates/optidock-brain",
+    "crates/optidock-tui",
 ]
 resolver = "2"
 
@@ -31,6 +32,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 ratatui = "0.29"
-crossterm = "0.29"
+crossterm = "0.28"
 bollard = "0.17"
 async-trait = "0.1"

@@ -1,5 +1,5 @@
 [package]
-name = "optidock-agent"
+name = "optidock-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,14 +7,13 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-reqwest.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tracing.workspace = true
-optidock-analyzer = { path = "../optidock-analyzer" }
 optidock-core = { path = "../optidock-core" }
-optidock-brain = { path = "../optidock-brain" }
+optidock-agent = { path = "../optidock-agent" }
 
 [dev-dependencies]
-async-trait.workspace = true
+tokio.workspace = true

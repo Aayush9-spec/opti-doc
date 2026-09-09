@@ -11,23 +11,6 @@ Your OptiDock AI project will be:
 4. **Integrated with GCP services** — Artifact Registry for images, Cloud Build, Cloud Run for hosting
 5. **GCP Console visible** — services, logs, and metrics all visible in Google Cloud Console
 
----
-
-## User Review Required
-
-> [!IMPORTANT]
-> **You need a Google Cloud account with billing enabled.** Cloud Run has a generous free tier (2 million requests/month), so costs should be minimal or zero for a project submission.
-
-> [!WARNING]
-> **You'll need to run some `gcloud` CLI commands manually** to set up initial authentication and create the GCP project. I'll provide exact commands and guide you through it.
-
-> [!IMPORTANT]
-> **GCP Project ID required.** Before I start executing, I need you to either:
-> - A) Share your existing GCP project ID, **OR**
-> - B) Confirm you want me to guide you through creating a new GCP project
-
----
-
 ## Proposed Changes
 
 ### Component 1: Production Dockerfiles

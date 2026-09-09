@@ -2268,6 +2268,60 @@ mod tests {
         assert!(!is_read_only_diagnostic_step(&"docker inspect api && docker rm api".to_string()));
     }
 
+    /// Mock OptiBrain provider: OOM explanation, an advisory restart, and a
+    /// read-only step plus a sneaky mutating step the allowlist must reject.
+    struct MockDiagnosisProvider;
+
+    #[async_trait::async_trait]
+    impl optidock_brain::DiagnosticProvider for MockDiagnosisProvider {
+        async fn diagnose(
+            &self,
+            _request: &optidock_brain::DiagnosisRequest,
+        ) -> anyhow::Result<optidock_brain::DiagnosisResponse> {
+            Ok(optidock_brain::DiagnosisResponse {
+                refined_root_cause: "ResourceExhaustion".to_string(),
+                confidence: 0.99,
+                recommended_action: "RestartContainer".to_string(),
+                human_explanation: "Container was OOM-killed; raised memory ceiling in compose".to_string(),
+                diagnostic_steps: vec![
+                    "docker stats api".to_string(),
+                    "docker rm -f api".to_string(),
+                ],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn escalation_enriches_report_with_mock_diagnosis_when_oom_killed() {
+        let runtime = MemoryRuntime::oom_killed("Killed\nmemory allocation failed");
+        let mut config = RecoveryAgentConfig::default();
+        // Force the deterministic pipeline straight to escalation on the first tick.
+        config.max_recovery_attempts = 0;
+        let mut master = MasterAgent::new(runtime, config)
+            .with_diagnostic_provider(Arc::new(MockDiagnosisProvider));
+
+        let report = master.run_once().await.unwrap();
+
+        let escalation = report.escalations.first().expect("escalation expected for OOM");
+        assert!(escalation
+            .suggested_resolution
+            .contains("OOM-killed; raised memory ceiling"), "{}", escalation.suggested_resolution);
+        // Read-only step is surfaced; mutating step was stripped by the allowlist.
+        assert!(escalation.suggested_resolution.contains("docker stats api"));
+        assert!(!escalation.suggested_resolution.contains("docker rm"));
+        // AI confidence (0.99) exceeds deterministic confidence, so it wins.
+        assert!(escalation.confidence_score > 0.9);
+        // Advisory action is queued as Planned metadata only; nothing is executed.
+        assert!(escalation.recovery_attempts.iter().any(|attempt| {
+            attempt.action == RecoveryAction::RestartContainer
+                && attempt.status == RecoveryAttemptStatus::Planned
+        }));
+        // The AI diagnosis is audit-logged alongside deterministic entries.
+        assert!(report.audit_log.iter().any(|entry| {
+            entry.level == "ai_diagnosis" && entry.container == "api"
+        }));
+    }
+
     #[tokio::test]
     async fn master_agent_discovers_container_and_creates_heartbeat() {
         let runtime = MemoryRuntime::healthy();
@@ -2337,6 +2391,7 @@ mod tests {
     struct MemoryRuntime {
         logs: Arc<Mutex<String>>,
         probe: Option<EndpointProbe>,
+        oom_killed: bool,
     }
 
     impl MemoryRuntime {
@@ -2344,6 +2399,7 @@ mod tests {
             Self {
                 logs: Arc::new(Mutex::new(String::new())),
                 probe: None,
+                oom_killed: false,
             }
         }
 
@@ -2351,6 +2407,15 @@ mod tests {
             Self {
                 logs: Arc::new(Mutex::new(logs.to_string())),
                 probe: None,
+                oom_killed: false,
+            }
+        }
+
+        fn oom_killed(logs: &str) -> Self {
+            Self {
+                logs: Arc::new(Mutex::new(logs.to_string())),
+                probe: None,
+                oom_killed: true,
             }
         }
     }
@@ -2364,7 +2429,17 @@ mod tests {
             &'a self,
             _container_id: &'a str,
         ) -> BoxFuture<'a, Result<ContainerInspection>> {
-            Box::pin(async move { Ok(sample_inspection(ContainerRuntimeState::Running)) })
+            let oom = self.oom_killed;
+            Box::pin(async move {
+                let mut inspection = sample_inspection(if oom {
+                    ContainerRuntimeState::Exited
+                } else {
+                    ContainerRuntimeState::Running
+                });
+                inspection.oom_killed = oom;
+                inspection.exit_code = if oom { Some(137) } else { Some(0) };
+                Ok(inspection)
+            })
         }
 
         fn container_logs<'a>(

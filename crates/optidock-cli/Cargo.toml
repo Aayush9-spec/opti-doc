@@ -30,4 +30,5 @@ optidock-agent = { path = "../optidock-agent" }
 optidock-brain = { path = "../optidock-brain" }
 optidock-core = { path = "../optidock-core" }
 optidock-runner = { path = "../optidock-runner" }
+optidock-tui = { path = "../optidock-tui" }
 tracing-bunyan-formatter = "0.3.10"

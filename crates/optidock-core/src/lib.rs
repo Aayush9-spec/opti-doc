@@ -1,8 +1,13 @@
 pub mod memory;
 pub mod models;
 pub mod prompting;
+pub mod storage;
 
 pub use memory::{LocalMemoryStore, MemoryEntry, MemoryKind};
+pub use storage::{
+    AgentAction, Artifact, Conversation, DockerEvent, JsonEnvelope, Message, SearchResult,
+    SearchSummary, Session, Storage, StorageConfig, StorageStatus,
+};
 pub use models::{
     AiProviderConfig, AiProviderKind, AiRuntimeConfig, BenchmarkResult, CiProvider,
     ContainerService, ContainerStatus, ChatContextRecord, DeploymentPlan, DeploymentRecord,
