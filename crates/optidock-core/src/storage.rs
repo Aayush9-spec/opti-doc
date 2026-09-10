@@ -184,43 +184,37 @@ pub struct Storage {
 
 #[derive(Clone)]
 pub struct ConversationStore {
-    home: PathBuf,
     connection: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
 pub struct MessageStore {
-    home: PathBuf,
     connection: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
 pub struct SessionStore {
-    home: PathBuf,
     connection: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
 pub struct ActionStore {
-    home: PathBuf,
     connection: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
 pub struct DockerStore {
-    home: PathBuf,
     connection: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
 pub struct ArtifactStore {
-    home: PathBuf,
+    config: StorageConfig,
     connection: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
 pub struct SearchStore {
-    home: PathBuf,
     connection: Arc<Mutex<Connection>>,
 }
 
@@ -251,13 +245,13 @@ impl Storage {
         let storage = Self {
             config: config.clone(),
             connection: Arc::clone(&shared),
-            conversations: ConversationStore { home: home.clone(), connection: Arc::clone(&shared) },
-            messages: MessageStore { home: home.clone(), connection: Arc::clone(&shared) },
-            sessions: SessionStore { home: home.clone(), connection: Arc::clone(&shared) },
-            actions: ActionStore { home: home.clone(), connection: Arc::clone(&shared) },
-            docker: DockerStore { home: home.clone(), connection: Arc::clone(&shared) },
-            artifacts: ArtifactStore { home: home.clone(), connection: Arc::clone(&shared) },
-            search: SearchStore { home: home.clone(), connection: Arc::clone(&shared) },
+            conversations: ConversationStore { connection: Arc::clone(&shared) },
+            messages: MessageStore { connection: Arc::clone(&shared) },
+            sessions: SessionStore { connection: Arc::clone(&shared) },
+            actions: ActionStore { connection: Arc::clone(&shared) },
+            docker: DockerStore { connection: Arc::clone(&shared) },
+            artifacts: ArtifactStore { config: config.clone(), connection: Arc::clone(&shared) },
+            search: SearchStore { connection: Arc::clone(&shared) },
         };
 
         storage.recover_stale_state()?;
@@ -672,7 +666,7 @@ impl ArtifactStore {
     ) -> Result<Artifact> {
         let id = Uuid::new_v4().to_string();
         let created_at = utc_timestamp_string();
-        let root = PathBuf::from(&self.home).join("data").join("conversations");
+        let root = PathBuf::from(&self.config.home).join("data").join("conversations");
         let conversation_dir = conversation_id
             .map(|id| root.join(id))
             .unwrap_or_else(|| root.join("scratch"));
