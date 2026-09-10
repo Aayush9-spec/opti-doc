@@ -90,8 +90,7 @@ pub struct AiProviderConfig {
     pub api_base: String,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
-    pub organization: Option<String>,
-    pub project: Option<String>,
+    #[serde(default)]
     pub local: bool,
 }
 
@@ -154,6 +153,9 @@ pub enum AiProviderKind {
     LlamaCpp,
     LocalOpenAiCompatible,
     Ollama,
+    Together,
+    DeepSeek,
+    Vllm,
     Custom,
 }
 
@@ -263,4 +265,53 @@ pub struct OptimizedDockerfile {
     pub changes_applied: Vec<String>,
     pub original_content: String,
     pub optimized_content: String,
+}
+
+#[cfg(test)]
+mod provider_config_tests {
+    use super::*;
+
+    /// Old `~/.optidock/provider.json` files carried `organization`/`project`
+    /// fields and native-Gemini bases. They must keep deserializing into the
+    /// trimmed struct (dropped fields tolerated via default serde behavior).
+    #[test]
+    fn legacy_provider_json_still_parses() {
+        let legacy = r#"{
+            "kind": "Gemini",
+            "model": "gemini-2.0-flash",
+            "api_base": "https://generativelanguage.googleapis.com",
+            "api_key_env": "GEMINI_API_KEY",
+            "api_key": null,
+            "organization": "org-123",
+            "project": "proj-abc",
+            "local": false
+        }"#;
+        let parsed: AiProviderConfig = serde_json::from_str(legacy)
+            .expect("legacy shape must still deserialize");
+        assert_eq!(parsed.kind, AiProviderKind::Gemini);
+        assert_eq!(parsed.model, "gemini-2.0-flash");
+        assert_eq!(parsed.api_base, "https://generativelanguage.googleapis.com");
+        assert!(!parsed.local);
+    }
+
+    /// A config that omits `local` (hand-edited) keeps defaulting to false.
+    #[test]
+    fn local_defaults_to_false_when_missing() {
+        let minimal = r#"{"kind": "OpenAi", "model": "gpt-4.1-mini", "api_base": "https://api.openai.com/v1"}"#;
+        let parsed: AiProviderConfig = serde_json::from_str(minimal).expect("minimal shape must parse");
+        assert_eq!(parsed.kind, AiProviderKind::OpenAi);
+        assert!(!parsed.local);
+        assert!(parsed.api_key_env.is_none());
+        assert!(parsed.api_key.is_none());
+    }
+
+    /// New kinds round-trip so saved configs for them persist correctly.
+    #[test]
+    fn new_kinds_roundtrip() {
+        for kind in [AiProviderKind::Together, AiProviderKind::DeepSeek, AiProviderKind::Vllm] {
+            let json = serde_json::to_string(&kind).unwrap();
+            let back: AiProviderKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, back);
+        }
+    }
 }

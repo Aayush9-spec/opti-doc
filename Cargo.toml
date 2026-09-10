@@ -35,3 +35,13 @@ ratatui = "0.29"
 crossterm = "0.28"
 bollard = "0.17"
 async-trait = "0.1"
+
+# ── Release profile (secure, optimized, stripped) ─────────────────────
+[profile.release]
+opt-level = "z"       # optimize for binary size (smaller installer)
+lto = true            # link-time optimization across all crates
+codegen-units = 1     # single codegen unit = better optimization
+strip = true          # strip debug symbols (smaller binary, harder to reverse-engineer)
+panic = "abort"       # abort on panic (smaller binary, no unwind tables)
+overflow-checks = true # keep integer overflow checks (security)
+

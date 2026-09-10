@@ -10,11 +10,11 @@ use auth::{
 use axum::{extract::Query, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use clap::{Parser, Subcommand};
 use optidock_agent::{
-    all_providers, build_architecture_prompt, build_chat_prompt, default_ai_runtime_config,
-    default_pipeline_context, moderate_pipeline, provider_label, provider_summary, run_analysis,
-    run_optimize, run_security_scan, save_provider_config, AgentHealthStatus, DockerCliRuntime,
-    MasterAgent, MasterAgentReport, RecoveryAgentConfig, RecoveryAttemptStatus, RecoveryStatus,
-    SignalSeverity,
+    all_providers, build_chat_prompt, default_ai_runtime_config,
+    default_pipeline_context, live_ai_chat, moderate_pipeline, provider_label, provider_summary,
+    run_analysis, run_optimize, run_security_scan, save_provider_config, AgentHealthStatus,
+    DockerCliRuntime, MasterAgent, MasterAgentReport, RecoveryAgentConfig, RecoveryAttemptStatus,
+    RecoveryStatus, SignalSeverity,
 };
 use optidock_core::{
     AiProviderConfig, AiProviderKind, AiRuntimeConfig, BenchmarkResult, DeploymentRecord,
@@ -143,9 +143,15 @@ enum Commands {
     },
     /// Switch the active LLM provider
     Config {
-        /// Provider name: gemini, openai, anthropic, openrouter, groq, ollama, llamacpp, local
+        /// Provider name: openai, openrouter, groq, ollama, llamacpp, local, gemini, together, deepseek, vllm
         #[arg(long)]
         provider: Option<String>,
+        /// Custom API base URL (any OpenAI-compatible endpoint, e.g. http://localhost:8000/v1)
+        #[arg(long)]
+        api_base: Option<String>,
+        /// API key for the custom or preset provider
+        #[arg(long)]
+        api_key: Option<String>,
         /// Model override (e.g. gpt-4o, claude-sonnet-4-20250514)
         #[arg(long)]
         model: Option<String>,
@@ -279,13 +285,20 @@ async fn main() -> Result<()> {
         }
         Commands::Config {
             provider,
+            api_base,
+            api_key,
             model,
             list,
         } => {
             if list {
                 render_provider_list();
-            } else if let Some(ref p) = provider {
-                save_provider_config(p, model.as_deref())?;
+            } else if api_base.is_some() || provider.is_some() {
+                save_provider_config(
+                    provider.as_deref().unwrap_or("custom"),
+                    model.as_deref(),
+                    api_base.as_deref(),
+                    api_key.as_deref(),
+                )?;
                 let config = default_ai_runtime_config();
                 print_section("Provider Updated");
                 println!(
@@ -294,6 +307,9 @@ async fn main() -> Result<()> {
                     provider_label(config.active_provider.kind),
                     config.active_provider.model
                 );
+                if let Some(ref base) = api_base {
+                    println!("  {} {}", paint_muted("API Base"), base);
+                }
             } else {
                 render_provider_report();
             }
@@ -554,28 +570,44 @@ async fn render_live_agent_response(input: &str, path: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "  {} I can help with project inspection, pipeline moderation, and live shell commands.",
-        paint_muted("Guide")
-    );
-    let prompt_pack = build_chat_prompt(input, Some(path));
-    let architecture_pack =
-        build_architecture_prompt(input, Some(path), Some("live-agent-response"));
-    println!(
-        "  {} Using saved prompt preset `{}`.",
-        paint_muted("Prompt"),
-        prompt_pack.prompt_id
-    );
-    println!(
-        "  {} Architecture preset available as `{}`.",
-        paint_muted("Prompt"),
-        architecture_pack.prompt_id
-    );
-    println!(
-        "  {} Try `/analyze`, `/pipeline`, or `/run cargo test`.",
-        paint_muted("Next")
-    );
+    // Try calling the LLM via the generic provider; fall back to the guide on error
+    match live_ai_chat(input, Some(path)).await {
+        Ok(reply) => {
+            println!();
+            for line in reply.lines() {
+                println!("  {}", line);
+            }
+            println!();
+        }
+        Err(err) => {
+            println!(
+                "  {} {}",
+                paint_muted("Guide"),
+                "I can help with project inspection, pipeline moderation, and live shell commands."
+            );
+            let prompt_pack = build_chat_prompt(input, Some(path));
+            println!(
+                "  {} AI model not configured or unreachable ({}). Showing prompt preview.",
+                paint_muted("Fallback"),
+                err
+            );
+            println!(
+                "  {} Using saved prompt preset `{}`.",
+                paint_muted("Prompt"),
+                prompt_pack.prompt_id
+            );
+            println!(
+                "  {} Try `/analyze`, `/pipeline`, or `/run cargo test`.",
+                paint_muted("Next")
+            );
+            println!(
+                "  {} Set `OPTIDOCK_API_BASE` + `OPTIDOCK_API_KEY` to enable live AI chat.",
+                paint_muted("Hint")
+            );
+        }
+    }
 
+    let prompt_pack = build_chat_prompt(input, Some(path));
     persist_live_chat_context(input, path, &prompt_pack.prompt_id).await;
 
     Ok(())
@@ -648,11 +680,12 @@ fn print_live_header(path: &str) {
         .unwrap_or_else(|| "optidock".to_string());
     let (branch, dirty, _, _) = optidock_tui::prompt::git_info_for_path(std::path::Path::new(path));
     let width = terminal_width().unwrap_or(80);
+    let runtime_config = default_ai_runtime_config();
     let status = ui::status_bar(
         &ws,
         "LIVE",
-        Some("openai"),
-        Some(&default_ai_runtime_config().active_provider.model),
+        Some(provider_label(runtime_config.active_provider.kind)),
+        Some(&runtime_config.active_provider.model),
         docker_daemon_status().as_deref(),
         branch.as_deref(),
         dirty,
@@ -709,8 +742,10 @@ CMD ["npm", "start"]
 
     if !env_path.exists() {
         let starter = r#"OPTIDOCK_PROVIDER=openai
-OPTIDOCK_FALLBACKS=openrouter,anthropic,gemini,ollama
-OPENAI_API_KEY=
+# OPTIDOCK_API_BASE=https://api.openai.com/v1
+# OPTIDOCK_API_KEY=sk-...
+# OPTIDOCK_MODEL=gpt-4.1-mini
+# OPTIDOCK_FALLBACKS=openrouter,ollama,local
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 "#;
@@ -837,18 +872,25 @@ async fn render_doctor_report() {
     let rustc = command_check("rustc");
     let docker = command_check("docker");
     let config = default_ai_runtime_config();
-    let provider_env = config
-        .active_provider
-        .api_key_env
-        .as_deref()
-        .unwrap_or("no key required");
+
+    // Determine which key env var the doctor should check.
+    // Generic OPTIDOCK_API_KEY takes priority; then the preset's api_key_env.
+    let key_env_display = if let Ok(val) = env::var("OPTIDOCK_API_KEY") {
+        if !val.trim().is_empty() {
+            "OPTIDOCK_API_KEY"
+        } else {
+            config.active_provider.api_key_env.as_deref().unwrap_or("no key required")
+        }
+    } else {
+        config.active_provider.api_key_env.as_deref().unwrap_or("no key required")
+    };
 
     print_header(
         "OptiDock AI",
         "Environment doctor",
         &[
             ("Active provider", provider_label_line(&config)),
-            ("Expected key", provider_env),
+            ("Expected key", key_env_display),
         ],
     );
 
@@ -858,17 +900,18 @@ async fn render_doctor_report() {
     render_command_check(&docker);
 
     print_section("Provider Configuration");
-    match env::var(provider_env) {
-        Ok(value) if !value.trim().is_empty() => {
-            println!("  {} {} is set", paint_ok(" READY "), provider_env);
-        }
-        _ => {
-            println!(
-                "  {} {} is missing or empty",
-                paint_warn(" CONFIG "),
-                provider_env
-            );
-        }
+    // Check the key: OPTIDOCK_API_KEY → preset env → OPENAI_API_KEY fallback
+    let key_ready = resolve_cli_api_key(&config.active_provider).is_empty() == false;
+    if key_ready {
+        println!("  {} API key is set", paint_ok(" READY "));
+    } else if config.active_provider.local {
+        println!("  {} Local provider (no key needed)", paint_ok(" READY "));
+    } else {
+        println!(
+            "  {} {} is missing or empty",
+            paint_warn(" CONFIG "),
+            key_env_display
+        );
     }
 
     print_section("Authentication");
@@ -1071,7 +1114,7 @@ fn render_provider_report() {
         paint_accent("•")
     );
     println!(
-        "  {} Or set OPTIDOCK_PROVIDER=anthropic in your env",
+        "  {} Or set `OPTIDOCK_API_BASE` + `OPTIDOCK_API_KEY` for any OpenAI-compatible endpoint",
         paint_accent("•")
     );
 }
@@ -1084,7 +1127,7 @@ fn render_provider_list() {
         "Supported LLM providers",
         &[
             ("Total", &providers.len().to_string()),
-            ("Default", "Gemini 2.0 Flash (free)"),
+            ("Default", "OpenAI gpt-4.1-mini"),
         ],
     );
 
@@ -1099,11 +1142,11 @@ fn render_provider_list() {
         };
 
         let tier = match p.kind {
-            AiProviderKind::Gemini => paint_ok(" FREE "),
-            AiProviderKind::Groq => paint_ok(" FREE "),
+            AiProviderKind::Gemini | AiProviderKind::Groq => paint_ok(" FREE "),
             AiProviderKind::Ollama
             | AiProviderKind::LlamaCpp
-            | AiProviderKind::LocalOpenAiCompatible => paint_accent(" LOCAL "),
+            | AiProviderKind::LocalOpenAiCompatible
+            | AiProviderKind::Vllm => paint_accent(" LOCAL "),
             _ => paint_warn(" PAID "),
         };
 
@@ -1125,7 +1168,7 @@ fn render_provider_list() {
 
     print_section("Usage");
     println!(
-        "  {} Set provider: `optidock config --provider gemini`",
+        "  {} Set provider: `optidock config --provider openrouter`",
         paint_accent("•")
     );
     println!(
@@ -1133,7 +1176,7 @@ fn render_provider_list() {
         paint_accent("•")
     );
     println!(
-        "  {} Env override: `OPTIDOCK_PROVIDER=anthropic optidock live .`",
+        "  {} Custom endpoint: `OPTIDOCK_API_BASE=http://localhost:8000/v1 optidock live .`",
         paint_accent("•")
     );
 }
@@ -1375,7 +1418,7 @@ async fn run_recovery_agents(
             master = master.with_forced_diagnosis_for(container);
         }
     } else if explain.is_some() {
-        anyhow::bail!("--explain requires OPTIDOCK_AGENT_AI_DIAGNOSIS=true, OPTIDOCK_MODEL_PROVIDER=openai, and OPENAI_API_KEY");
+        anyhow::bail!("--explain requires OPTIDOCK_AGENT_AI_DIAGNOSIS=true + OPTIDOCK_API_BASE (or a preset via OPTIDOCK_PROVIDER) + OPTIDOCK_API_KEY / preset key");
     }
 
     loop {
@@ -1404,19 +1447,68 @@ async fn run_recovery_agents(
 }
 
 fn diagnostic_provider_from_env() -> Option<Arc<dyn optidock_brain::DiagnosticProvider>> {
-    if !matches!(env::var("OPTIDOCK_AGENT_AI_DIAGNOSIS").ok()?.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on") {
+    if !matches!(
+        env::var("OPTIDOCK_AGENT_AI_DIAGNOSIS")
+            .ok()?
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    ) {
         return None;
     }
-    let provider = env::var("OPTIDOCK_MODEL_PROVIDER").unwrap_or_else(|_| "openai".to_string());
-    if !provider.eq_ignore_ascii_case("openai") {
-        tracing::warn!(provider = %provider, "OptiBrain provider is not implemented; AI diagnosis remains disabled");
+
+    // Resolve base/key/model from the generic chain:
+    // 1. OPTIDOCK_API_BASE (explicit)
+    // 2. Saved provider config (via default_ai_runtime_config)
+    // 3. Preset default
+    let runtime = default_ai_runtime_config();
+    let api_base = env::var("OPTIDOCK_API_BASE")
+        .or_else(|_| env::var("OPTIDOCK_OPENAI_API_BASE")) // legacy alias
+        .unwrap_or_else(|_| runtime.active_provider.api_base.clone());
+
+    if api_base.trim().is_empty() {
+        tracing::warn!("no API base URL resolved; AI diagnosis disabled");
         return None;
     }
-    let api_key = env::var("OPENAI_API_KEY").ok()?.trim().to_string();
-    if api_key.is_empty() { return None; }
-    let api_base = env::var("OPTIDOCK_OPENAI_API_BASE").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-    let model = env::var("OPTIDOCK_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".to_string());
-    Some(Arc::new(OpenAiDiagnosticProvider::new(api_base, api_key, model)))
+
+    // Key resolution: OPTIDOCK_API_KEY → OPENAI_API_KEY → preset's api_key_env → none (local)
+    let api_key = resolve_cli_api_key(&runtime.active_provider);
+
+    // Local presets (Ollama, llama.cpp, etc.) don't need a key
+    let is_local = runtime.active_provider.local;
+    if api_key.is_empty() && !is_local {
+        tracing::warn!("no API key found for non-local provider; AI diagnosis disabled");
+        return None;
+    }
+
+    let model = env::var("OPTIDOCK_MODEL")
+        .unwrap_or_else(|_| runtime.active_provider.model.clone());
+
+    Some(Arc::new(OpenAiDiagnosticProvider::new(
+        api_base, api_key, model,
+    )))
+}
+
+/// Resolve the API key for a provider: explicit env → preset's api_key_env → OPENAI_API_KEY fallback → empty.
+fn resolve_cli_api_key(config: &AiProviderConfig) -> String {
+    if let Ok(key) = env::var("OPTIDOCK_API_KEY") {
+        if !key.trim().is_empty() {
+            return key;
+        }
+    }
+    if let Some(env_name) = &config.api_key_env {
+        if let Ok(val) = env::var(env_name) {
+            if !val.trim().is_empty() {
+                return val;
+            }
+        }
+    }
+    if let Ok(val) = env::var("OPENAI_API_KEY") {
+        if !val.trim().is_empty() {
+            return val;
+        }
+    }
+    String::new()
 }
 
 fn render_recovery_agent_report(

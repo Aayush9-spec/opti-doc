@@ -11,19 +11,18 @@ OptiDock AI
 ### One-Line Pitch
 
 A Rust-first autonomous Docker optimization and deployment agent with a powerful terminal experience.
-
+          
 ### Product Positioning
 
 OptiDock AI should feel like a real systems product:
 
 - fast enough to trust from the terminal
 - smart enough to optimize container workflows
-- opinionated enough to make useful decisions
+- opinionated enough to make useful decisions       
 - safe enough to validate and roll back changes
 
 ### Core USP
-
-AI-native container operations with benchmark-backed optimization, delivered through a serious CLI and agent runtime.
+ CLI and agent runtime.
 
 ## 2. Strategic Direction
 

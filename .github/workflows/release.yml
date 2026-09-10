@@ -1,0 +1,178 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: optidock
+
+jobs:
+  # ── Stage 1: Build release binaries for all platforms ────────────────
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: optidock-x86_64-pc-windows-msvc.exe
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: optidock-x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: optidock-aarch64-unknown-linux-gnu
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: optidock-x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: optidock-aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p optidock-cli
+
+      - name: Rename binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} ${{ matrix.artifact }}
+          chmod +x ${{ matrix.artifact }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        run: Copy-Item "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}.exe" "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  # ── Stage 2: Build Windows MSI installer ─────────────────────────────
+  msi:
+    name: Build Windows MSI installer
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: optidock-x86_64-pc-windows-msvc
+
+      - name: Install WiX Toolset
+        run: |
+          choco install wixtoolset -y
+          echo "C:\Program Files (x86)\WiX Toolset v4\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Create MSI installer
+        run: |
+          # Build the WiX installer
+          cargo install cargo-wix --locked 2>$null
+          cargo wix --no-logo --release -p optidock-cli
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: optidock-installer.msi
+          path: target/wix/*.msi
+
+  # ── Stage 3: Checksums + Release ────────────────────────────────────
+  release:
+    name: Create Release
+    needs: [build, msi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          for dir in */; do
+            for file in "$dir"*; do
+              [ -f "$file" ] && sha256sum "$file" >> ../checksums-sha256.txt
+            done
+          done
+          echo "=== Checksums ==="
+          cat ../checksums-sha256.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: "OptiDock ${{ github.event.inputs.tag || github.ref_name }}"
+          body: |
+            ## OptiDock ${{ github.event.inputs.tag || github.ref_name }}
+
+            ### Quick Install
+
+            **Windows (MSI installer):**
+            Download `optidock-installer.msi` and run it.
+
+            **Windows (portable):**
+            Download `optidock-x86_64-pc-windows-msvc.exe` and add to PATH.
+
+            **macOS:**
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/optidock-x86_64-apple-darwin -o /usr/local/bin/optidock
+            chmod +x /usr/local/bin/optidock
+            ```
+
+            **Linux:**
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/optidock-x86_64-unknown-linux-gnu -o /usr/local/bin/optidock
+            chmod +x /usr/local/bin/optidock
+            ```
+
+            **Cargo install:**
+            ```bash
+            cargo install optidock-cli --locked
+            ```
+
+            ### Verify Checksums
+            ```bash
+            sha256sum -c checksums-sha256.txt
+            ```
+
+            ### Security
+            - Release binaries are built with LTO, symbol stripping, and overflow checks
+            - SHA256 checksums provided for integrity verification
+            - All dependencies audited via `cargo audit`
+          files: |
+            artifacts/**/*
+            checksums-sha256.txt
+          draft: false
+          prerelease: false
