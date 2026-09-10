@@ -34,5 +34,23 @@
       "mode": "dashboard"
     },
     "created_at": 1784632578
+  },
+  {
+    "scope": ".\\.optidock\\ccme",
+    "source": "launcher",
+    "message": "started runtime command center",
+    "payload": {
+      "path": "."
+    },
+    "created_at": 1789013076
+  },
+  {
+    "scope": ".\\.optidock\\ccme",
+    "source": "launcher",
+    "message": "prepared multi-terminal runtime layout",
+    "payload": {
+      "mode": "dashboard"
+    },
+    "created_at": 1789013076
   }
 ]

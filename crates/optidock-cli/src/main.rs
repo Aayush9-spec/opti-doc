@@ -309,14 +309,6 @@ struct AuthSession {
     workspace: String,
 }
 
-#[derive(Debug, Clone)]
-struct LiveUiState {
-    workspace: String,
-    auth_status: String,
-    api_status: String,
-    last_command: Option<CommandExecution>,
-}
-
 async fn run_live_session(path: &str) -> Result<()> {
     print_live_header(path);
     print_section("Live Mode");
@@ -648,6 +640,41 @@ fn print_live_header(path: &str) {
             ("Auth", &auth_status),
         ],
     );
+
+    // Persistent status bar footer — workspace, mode, git, docker, key hints.
+    let ws = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "optidock".to_string());
+    let (branch, dirty, _, _) = optidock_tui::prompt::git_info_for_path(std::path::Path::new(path));
+    let width = terminal_width().unwrap_or(80);
+    let status = ui::status_bar(
+        &ws,
+        "LIVE",
+        Some("openai"),
+        Some(&default_ai_runtime_config().active_provider.model),
+        docker_daemon_status().as_deref(),
+        branch.as_deref(),
+        dirty,
+        &[("?", "help"), ("C-c", "exit")],
+        width,
+    );
+    println!("\n{}", status);
+}
+
+/// Best-effort detection of whether the Docker daemon is reachable.
+fn docker_daemon_status() -> Option<String> {
+    let ok = std::process::Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if ok { Some("running".to_string()) } else { None }
+}
+
+/// Terminal width (falls back to 80 when unknown).
+fn terminal_width() -> Option<usize> {
+    crossterm::terminal::size().ok().map(|(w, _)| w as usize)
 }
 
 fn looks_like_shell_command(input: &str) -> bool {
@@ -896,6 +923,13 @@ async fn render_doctor_report() {
             }
         }
     }
+
+    // Footer status bar
+    let ws = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "optidock".to_string());
+    println!("\n{}", ui::status_bar_minimal(&ws, "DOCTOR", 80));
 }
 
 fn render_command_check(check: &optidock_runner::CommandCheck) {
@@ -1390,6 +1424,14 @@ fn render_recovery_agent_report(
     config: &RecoveryAgentConfig,
     watch: bool,
 ) {
+    // Themed statement header + recovery art banner for the agent run.
+    println!("{}", ui::statement_line("🧠", "OptiBrain recovery master"));
+    if let Some(art) = ui::art_library().get("recovery.master") {
+        for line in art.lines.iter() {
+            println!("  {}", paint_brand(line));
+        }
+    }
+
     let agent_count = report.registry.agents.len().to_string();
     let heartbeat_count = report.heartbeats.len().to_string();
     let escalation_count = report.escalations.len().to_string();
@@ -1842,6 +1884,5 @@ fn strip_ansi(input: &str) -> String {
 
 use ui::{
     paint_accent, paint_bold, paint_brand, paint_critical, paint_info, paint_muted, paint_ok,
-    paint_panel_bottom, paint_panel_divider, paint_panel_side, paint_panel_top, paint_prompt,
-    paint_warn,
+    paint_panel_bottom, paint_panel_divider, paint_panel_side, paint_panel_top, paint_warn,
 };

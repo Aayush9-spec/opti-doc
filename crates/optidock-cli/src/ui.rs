@@ -90,15 +90,6 @@ pub fn paint_critical(value: &str) -> String {
     paint_badge(ColorToken::Error, value)
 }
 
-pub fn paint_prompt(value: &str) -> String {
-    let c = theme().crossterm(ColorToken::BrandPrimary);
-    let code = match c {
-        crossterm::style::Color::Rgb { r, g, b } => format!("\x1b[1;38;2;{};{};{}m", r, g, b),
-        _ => String::new(),
-    };
-    format!("{}➜ {}\x1b[0m", code, value)
-}
-
 // ─── Panels (kept box-drawing, theme-colored) ───────────────────────────────
 
 pub fn paint_panel_top(width: usize) -> String {
@@ -192,11 +183,6 @@ pub fn banner() -> Vec<String> {
 /// Split a multi-line painted string keeping the first line intact.
 fn split_lines(s: &str) -> Vec<String> {
     s.split('\n').map(|l| l.to_string()).collect()
-}
-
-/// A decorative divider section header.
-pub fn section_header(title: &str) -> String {
-    format!("\n{} {}", paint_accent("●"), paint_bold(title))
 }
 
 /// Small helper: pull the leaf dir name of cwd for the prompt/status bar.
